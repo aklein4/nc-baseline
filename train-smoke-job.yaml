@@ -1,45 +1,87 @@
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: baseline-smoke
-spec:
-  backoffLimit: 0
-  template:
-    spec:
-      restartPolicy: Never
-      tolerations:
-        - key: amd.com/gpu
-          operator: Exists
-          effect: NoSchedule
-      containers:
-        - name: train
+# Single-node AMD GPU smoke test: three optimizer updates with synthetic data.
+# Uses the published ROCm/Python image from the National Compute nanoGPT example.
+# Installs uv and this repo's locked dependencies when the pod starts.
+# Requires outbound access to GitHub and Python package/download servers.
+# The fetched commit must be pushed; local uncommitted edits are not downloaded.
+# The cluster driver must support this image's ROCm version; compatibility with
+# the locked JAX plugin still needs an AMD hardware smoke run.
+#
+# Run:   kubectl apply -f train-smoke-job.yaml
+# Watch: kubectl logs -f job/baseline-smoke
+# Clean: kubectl delete job baseline-smoke
+# Delete the previous Job before reapplying a changed pod template.
+
+apiVersion: batch/v1 # Kubernetes API group/version for Jobs.
+kind: Job # A finite task whose completion or failure Kubernetes tracks.
+
+metadata: # Identity of the Job object.
+  name: baseline-smoke # Name used by kubectl logs/delete job/baseline-smoke.
+
+spec: # Desired behavior of the Job.
+
+  backoffLimit: 0 # Do not retry a failed run automatically.
+  ttlSecondsAfterFinished: 600 # Remove the Job object ten minutes after completion/failure.
+
+  template: # Pod blueprint; with default Job settings, runs one pod at a time.
+
+    metadata:
+    labels: { app: nc-baseline }
+
+    spec: # How to run the pod on its assigned node.
+
+      restartPolicy: Never # Do not restart an exited container within this pod.
+      tolerations: # Allow placement on nodes carrying these scheduling taints.
+        - key: amd.com/gpu # Match the GPU-node taint used by this cluster.
+          operator: Exists # ?
+          effect: NoSchedule # ?
+
+      containers: # Containers to run together in this pod (just one here).
+        - name: train # Container name, selectable with kubectl logs -c train.
+
+          # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
+          # Our startup script installs JAX separately; training does not use PyTorch.
           image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
-          workingDir: /workspace
-          resources:
-            limits:
-              amd.com/gpu: 8
-          env:
-            - name: PYTHONUNBUFFERED
-              value: "1"
-            - name: LLVM_PATH
-              value: /opt/rocm/llvm
+
+          workingDir: /workspace # Initial directory for the startup shell.
+
+          resources: # Hardware allocation for this container.
+            limits: # GPU limits also act as requests when requests are omitted.
+              amd.com/gpu: 8 # Allocate eight AMD GPUs on the same node.
+
+          env: # Environment variables visible to the shell and its subprocesses.
+            - name: PYTHONUNBUFFERED # Control Python stdout/stderr buffering.
+              value: "1" # Emit Python output promptly into kubectl logs.
+            - name: LLVM_PATH # Tell XLA where ROCm's LLVM toolchain is installed.
+              value: "/opt/rocm/llvm" # Toolchain location inside the image.
+
           volumeMounts:
+            # RCCL (ROCm's NCCL) moves tensors between the 8 ranks through
+            # /dev/shm; the kubernetes default of 64Mi is far too small and
+            # fails at startup
             - name: shm
               mountPath: /dev/shm
-            - name: workspace
-              mountPath: /workspace
-          command: ["bash", "-c"]
-          args:
-            - |
+            # the cluster's shared volume, mounted at the same path on every
+            # node (see the volume below)
+            - name: shared
+              mountPath: /mnt/shared
+
+          command: ["bash", "-c"] # Override the image entrypoint; execute a shell string.
+          args: # Arguments to the command; the one string below is the whole script.
+            - | # YAML literal block preserves the shell script newlines.
+              
               set -euo pipefail
+              
+              # Install a pinned uv version; avoid retaining pip's download cache.
               python3 -m pip install --no-cache-dir uv==0.11.21
-              git init /workspace/nc-baseline
-              cd /workspace/nc-baseline
-              git remote add origin https://github.com/aklein4/nc-baseline.git
-              GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin ce6ce744ced4ea94af3edd62142aa824e5c6be47
-              git checkout --detach FETCH_HEAD
+              
+              git clone https://github.com/aklein4/nc-baseline.git
+              cd nc-baseline
+
+              # Use uv.lock without changing it, add ROCm dependencies, omit dev
+              # tools, and select Python 3.12 for the project's virtual environment.
               uv sync --locked --extra rocm --no-dev --python 3.12
 
+              # exec replaces Bash with the launcher so its exit status is the job's.
               exec uv run --no-sync python src/train.py \
                 --config-name=horizon-lm-v4-32 \
                 name=gpu-smoke \
@@ -54,10 +96,11 @@ spec:
                 trainer.debug=true \
                 trainer.wandb.enabled=false \
                 trainer.huggingface.enabled=false
-      volumes:
-        - name: shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 8Gi
-        - name: workspace
-          emptyDir: {}
+
+      volumes: # Pod-scoped storage referenced by volumeMounts above.
+        - name: shm # Shared-memory volume identifier.
+          emptyDir: # Created empty for this pod; deleted when the pod is removed.
+            medium: Memory # Use RAM-backed tmpfs, not node disk.
+            sizeLimit: 8Gi # Cap shared memory at 8 GiB; usage consumes node RAM.
+        - name: workspace # Checkout/environment volume identifier.
+          emptyDir: {} # Default node-backed storage; removed with the pod, not shared.
