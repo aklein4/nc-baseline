@@ -1,0 +1,26 @@
+seed: 42
+notes: null
+
+trainer:
+    run_dir: local_data/runs/${name}
+    checkpoint:
+        load_state: false
+        save_optimizer: false
+    wandb:
+        project: outer-loop-jax
+    huggingface:
+        private: false
+
+data:
+    skip_batches: 0
+
+distributed:
+    initialize: auto
+
+mesh:
+    fsdp_axis_size: -1
+
+hydra:
+    run:
+        dir: .
+    output_subdir: null

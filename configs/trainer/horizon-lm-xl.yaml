@@ -1,0 +1,5 @@
+defaults:
+    - horizon-xl
+    - _self_
+
+_target_: trainers.horizon_lm_trainer.HorizonLMTrainer

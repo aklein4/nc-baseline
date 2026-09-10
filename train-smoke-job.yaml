@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: baseline-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      tolerations:
+        - key: amd.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: train
+          image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+          workingDir: /workspace
+          resources:
+            limits:
+              amd.com/gpu: 8
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: LLVM_PATH
+              value: /opt/rocm/llvm
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            - name: workspace
+              mountPath: /workspace
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              python3 -m pip install --no-cache-dir uv==0.11.21
+              git init /workspace/nc-baseline
+              cd /workspace/nc-baseline
+              git remote add origin https://github.com/aklein4/nc-baseline.git
+              GIT_TERMINAL_PROMPT=0 git fetch --depth=1 origin ce6ce744ced4ea94af3edd62142aa824e5c6be47
+              git checkout --detach FETCH_HEAD
+              uv sync --locked --extra rocm --no-dev --python 3.12
+
+              exec uv run --no-sync python src/train.py \
+                --config-name=horizon-lm-v4-32 \
+                name=gpu-smoke \
+                model=llama3p2-test \
+                data=synthetic-lm \
+                data.collator.episodes=2 \
+                initialization=null \
+                distributed.initialize=false \
+                mesh.fsdp_axis_size=8 \
+                trainer.global_batch_size=8 \
+                trainer.max_steps=3 \
+                trainer.debug=true \
+                trainer.wandb.enabled=false \
+                trainer.huggingface.enabled=false
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+        - name: workspace
+          emptyDir: {}

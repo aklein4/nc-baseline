@@ -1,0 +1,121 @@
+"""Stateless Llama baseline for episodic Horizons batches.
+
+References:
+- docs/architecture.md#trainers-and-compiled-steps
+- https://docs.jax.dev/en/latest/_autosummary/jax.lax.scan.html
+"""
+
+from typing import Any, ClassVar
+
+import jax
+import jax.numpy as jnp
+
+from trainers.base_trainer import BaseTrainer
+from utils.losses import per_example_lm_losses
+from utils.optimizer_utils import FROZEN
+from utils.tree_utils import tree_add, tree_labels, tree_zeros
+from utils.typing_utils import PyTree
+
+
+def episodic_loss_metrics(
+    losses: tuple[jax.Array, jax.Array],
+    valid_mask: jax.Array,
+    aux_loss_weight: float,
+) -> dict[str, jax.Array]:
+    """Summarize assistant and auxiliary losses by episode and decade."""
+    assistant_losses, auxiliary_losses = losses
+    assistant_loss = jnp.mean(assistant_losses)
+    auxiliary_loss = jnp.mean(auxiliary_losses)
+    metrics = {
+        "loss": assistant_loss + aux_loss_weight * auxiliary_loss,
+        "total_loss": assistant_loss,
+        "total_aux_loss": auxiliary_loss,
+        "atom_count": valid_mask.sum(),
+    }
+
+    episode_count = assistant_losses.shape[0]
+    for index in range(episode_count):
+        metrics[f"lm_loss/episode_{index:02d}"] = assistant_losses[index]
+        metrics[f"aux_loss/episode_{index:02d}"] = auxiliary_losses[index]
+
+    for decade in range((episode_count - 1) // 10 + 1):
+        start = max(1, decade * 10)
+        stop = min(episode_count, (decade + 1) * 10)
+        if start >= stop:
+            continue
+        metrics[f"grouped_lm_loss/decade_{decade:02d}"] = jnp.mean(
+            assistant_losses[start:stop]
+        )
+        metrics[f"grouped_aux_loss/decade_{decade:02d}"] = jnp.mean(
+            auxiliary_losses[start:stop]
+        )
+    return metrics
+
+
+class HorizonLMTrainer(BaseTrainer):
+    """Train independent episodes without a recurrent or fast-weight state."""
+
+    required_config_keys: ClassVar[list[str]] = BaseTrainer.required_config_keys + [
+        "num_logit_iterations",
+        "aux_loss_weight",
+        "groups.slow._target_",
+        "groups.slow.lr",
+    ]
+
+    def __init__(self, model: Any, config: Any, params: PyTree) -> None:
+        labels = tree_labels(
+            params,
+            {FROZEN: ("embed_tokens", "lm_head")},
+            "slow",
+        )
+        super().__init__(model, config, params, labels)
+
+    def _episode_loss(
+        self, params: PyTree, batch: dict[str, jax.Array]
+    ) -> tuple[jax.Array, tuple[jax.Array, jax.Array]]:
+        states = self.model.apply(
+            {"params": params},
+            batch["input_ids"],
+            shift_states=True,
+            compute_logits=False,
+        )
+        assistant = batch["assistant_mask"].astype(jnp.float32)
+        valid = batch["attention_mask"].astype(jnp.float32)
+        losses, _ = per_example_lm_losses(
+            self.model,
+            params,
+            states,
+            batch["input_ids"],
+            jnp.stack((assistant, valid - assistant), axis=-1),
+            int(self.config.num_logit_iterations),
+        )
+        assistant_loss, auxiliary_loss = losses
+        loss = assistant_loss + float(self.config.aux_loss_weight) * auxiliary_loss
+        return loss, (assistant_loss, auxiliary_loss)
+
+    def _train_step(
+        self, params: PyTree, opt_state: PyTree, step: jax.Array, batch: Any
+    ) -> Any:
+        episodes = tuple(
+            jnp.swapaxes(batch[name], 0, 1)
+            for name in ("input_ids", "assistant_mask", "attention_mask")
+        )
+        param_grads = tree_zeros(params)
+
+        def body(carry: PyTree, values: Any) -> Any:
+            input_ids, assistant_mask, attention_mask = values
+            current = {
+                "input_ids": input_ids,
+                "assistant_mask": assistant_mask,
+                "attention_mask": attention_mask,
+            }
+            (_, losses), grads = jax.value_and_grad(self._episode_loss, has_aux=True)(
+                params, current
+            )
+            return tree_add(carry, grads), losses
+
+        param_grads, losses = jax.lax.scan(body, param_grads, episodes)
+        metrics = episodic_loss_metrics(
+            losses, batch["attention_mask"], float(self.config.aux_loss_weight)
+        )
+        return self.apply_gradients(params, opt_state, step, param_grads, metrics)

@@ -1,0 +1,145 @@
+# First multi-GPU training job (Kubernetes, AMD-GPU clusters): nanoGPT
+# (char-level Shakespeare, GPT-2-size model) trained with PyTorch DDP via
+# torchrun — all 8 GPUs on one node. Twin of nanogpt-job.yaml (NVIDIA
+# clusters); same model, data, and batch schedule, so runs are comparable.
+#
+#   Run:    kubectl apply -f https://nationalcompute.com/first-job/nanogpt-job-amd.yaml
+#   Watch:  kubectl logs -f job/nanogpt
+#   Clean:  kubectl delete job nanogpt   # stops it early; a finished run
+#                                        # removes itself after 10 min
+#
+# Self-contained on purpose: the pod fetches nanoGPT, tokenizes the (tiny)
+# dataset and trains, all inside AMD's stock ROCm PyTorch container —
+# nothing to install (ROCm PyTorch presents the GPUs through the standard
+# torch.cuda API, so nanoGPT runs unmodified), and the same pattern accepts
+# any OCI image (Docker Hub, private registries). The first run on a node
+# pulls the image (several minutes, the pod shows ContainerCreating); later
+# runs on that node start in seconds.
+#
+# The training log is ALSO written to the cluster's shared volume when the
+# cluster has one — /mnt/shared/logs/nanogpt.log — so it outlives the GPU
+# node and reads from the CPU worker without holding a GPU
+# (shared-logs-reader.yaml). On a cluster without a shared volume the log
+# stays in `kubectl logs` and nothing is written to the node.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nanogpt
+spec:
+  backoffLimit: 0            # a failed run stays visible instead of retrying
+  # a finished run (complete or failed) removes itself after ten minutes:
+  # a Job's pod template is immutable, so applying this file over a
+  # finished Job is refused — with the Job gone, the next apply starts a
+  # fresh run. Its console output goes with it; the shared-volume log
+  # written below stays.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { app: nanogpt }
+    spec:
+      restartPolicy: Never
+      # GPU nodes carry the amd.com/gpu=present:NoSchedule taint so
+      # CPU-only pods don't occupy them — GPU pods add the toleration
+      tolerations:
+        - key: amd.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: train
+          # keep the rocmX.Y in the tag within the site's installed ROCm
+          # driver line (userspace minor drift is fine, major is not)
+          image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+          resources:
+            limits:
+              amd.com/gpu: 8
+          env:
+            # stdout is a pipe, so python block-buffers its prints and a
+            # live `kubectl logs -f` stays empty for most of the run —
+            # flush per line instead
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            # RCCL (ROCm's NCCL) moves tensors between the 8 ranks through
+            # /dev/shm; the kubernetes default of 64Mi is far too small and
+            # fails at startup
+            - name: shm
+              mountPath: /dev/shm
+            # the cluster's shared volume, mounted at the same path on every
+            # node (see the volume below)
+            - name: shared
+              mountPath: /mnt/shared
+          workingDir: /workspace
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -eu -o pipefail
+              # the shared volume: /mnt/shared is bound from the node, so a
+              # network filesystem there means the volume is attached; a node
+              # without one shows its own disk, and the log then stays in
+              # kubectl logs only (never written to the node)
+              log=/dev/null
+              fs=$(awk '$2 == "/mnt/shared" { t = $3 } END { print t }' /proc/self/mounts)
+              case "$fs" in
+                ""|ext4|xfs|btrfs|overlay|tmpfs)
+                  echo "no shared volume on this cluster - the log stays in kubectl logs" ;;
+                *)
+                  mkdir -p /mnt/shared/logs
+                  log=/mnt/shared/logs/nanogpt.log
+                  echo "=== nanogpt run $(date -u +%FT%TZ) on $(hostname) ===" >> "$log"
+                  echo "log also written to $log on the shared volume" ;;
+              esac
+              # tarball instead of git clone: smaller, and no history needed
+              curl -fsSL https://github.com/karpathy/nanoGPT/archive/refs/heads/master.tar.gz | tar xz
+              cd nanoGPT-master
+              # prepare.py imports requests; the NGC image ships it, the
+              # ROCm image doesn't
+              pip install -q requests
+              python data/shakespeare_char/prepare.py
+              # nanoGPT reports MFU against a hardcoded NVIDIA A100 peak
+              # (312 TFLOPS bf16), so faster GPUs print >100%. Rescale the
+              # denominator to the bf16 dense peak of whatever GPU is
+              # present, so MFU reads as a true fraction of this machine.
+              # (ROCm PyTorch reports the device through torch.cuda too.)
+              python - <<'PY'
+              import torch
+              peaks = {"MI300": 1307e12, "MI325": 1307e12,
+                       "MI355": 2500e12}  # bf16 dense FLOPS/s
+              name = torch.cuda.get_device_name(0)
+              peak = next((p for m, p in peaks.items() if m in name), 0)
+              if peak:
+                  src = open("model.py").read()
+                  open("model.py", "w").write(src.replace(
+                      "flops_promised = 312e12", f"flops_promised = {peak}"))
+              else:
+                  print(f"unrecognized GPU {name!r} - MFU stays in A100-peak units")
+              PY
+              # gradient_accumulation_steps must divide evenly by the world
+              # size (nanoGPT asserts) — 16 covers this 8-GPU run and keeps
+              # the global batch identical to the other first-job runs.
+              # The run is TIME-boxed, not iteration-boxed (seb 2026-09-01:
+              # the first job should exercise the node for about an hour,
+              # not finish in a minute): max_iters sits far past the horizon
+              # and the timer ends the run — timeout exits 124 when the hour
+              # is up, which IS the success path; anything else is a real
+              # failure. Trim the 3600 for a quicker pass.
+              # tee: every line reaches kubectl logs AND the shared-volume
+              # log (pipefail keeps torchrun's exit status, not tee's)
+              rc=0
+              timeout 3600 torchrun --standalone --nproc-per-node=8 \
+                train.py config/train_shakespeare_char.py \
+                  --n_layer=12 --n_head=12 --n_embd=768 --block_size=1024 \
+                  --batch_size=16 --gradient_accumulation_steps=16 \
+                  --max_iters=1000000 --lr_decay_iters=1000000 \
+                  --eval_interval=1000 \
+                  --dtype=bfloat16 --compile=False --wandb_log=False \
+                2>&1 | tee -a "$log" || rc=$?
+              [ "$rc" -eq 124 ] || exit "$rc"
+              echo "one-hour training window complete" | tee -a "$log"
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 8Gi }
+        - name: shared
+          # no `type`: a node without the shared volume must not fail the
+          # job — the script checks what is mounted and skips the file
+          hostPath:
+            path: /mnt/shared

@@ -1,0 +1,5 @@
+collator:
+    _target_: collators.synthetic.SyntheticCollator
+    sequence_length: 16
+    episodes: 1
+    vocab_size: ${model.vocab_size}

@@ -1,0 +1,9 @@
+dataset:
+    path: aklein4/300k-horizons
+    split: train
+    streaming: true
+collator:
+    _target_: collators.horizon.HorizonCollator
+    tokenizer_url: meta-llama/Llama-3.2-1B-Instruct
+    max_length: 1024
+    cluster_length: 64

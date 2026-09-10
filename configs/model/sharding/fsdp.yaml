@@ -1,0 +1,3 @@
+# Scanned layers add the leading null dimension. Rules are regex searches.
+default: []
+rules: []
