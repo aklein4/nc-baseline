@@ -7,7 +7,7 @@ trainer:
         load_state: false
         save_optimizer: false
     wandb:
-        project: outer-loop-jax
+        project: nc-baseline
     huggingface:
         private: false
 

@@ -1,0 +1,13 @@
+# Repository guide: docs/configuration.md
+# Hydra defaults lists: https://hydra.cc/docs/advanced/defaults_list/
+defaults:
+    - default
+    - _self_
+    - model: llama3p2-1b
+    - data: 300k-horizons-llama3
+    - trainer: horizon-lm-xl
+
+name: horizon-lm-xl-1b
+
+initialization: meta-llama/Llama-3.2-1B-Instruct
+initialization_step: null

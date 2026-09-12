@@ -1,0 +1,104 @@
+# Set secrets: kubectl create secret generic api-keys --from-env-file="$HOME/.config/nc-baseline/credentials.env" --dry-run=client -o yaml | kubectl apply -f -
+
+# Run:   kubectl apply -f full-baseline.yaml
+# Watch: kubectl logs -f job/full-baseline --pod-running-timeout=10m
+# Clean: kubectl delete job full-baseline
+
+apiVersion: batch/v1
+kind: Job 
+
+metadata:
+  name: full-baseline
+
+spec:
+
+  backoffLimit: 0 # Do not retry a failed run automatically
+  ttlSecondsAfterFinished: 600 # Keep the job/pod for 10 minutes after completion/failure
+
+  template:
+
+    # not necessary, but good for organization
+    metadata:
+      labels: { app: nc-baseline }
+
+    spec:
+
+      restartPolicy: Never # Do not restart an exited container within this pod, async with backoff so must be set to avoid retrying
+      
+      tolerations: 
+        - key: amd.com/gpu # Match the GPU-node taint used by the NC cluster
+          operator: Exists # no specific value, just the presence of the taint key
+          effect: NoSchedule # don't schedule any pods that don't match
+
+      containers:
+        - name: train
+
+          # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
+          # Our startup script installs JAX separately; training does not use PyTorch.
+          image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+
+          resources:
+            limits:
+              amd.com/gpu: 8
+
+          env: # Environment variables visible to the shell and its subprocesses.
+            # send python stdout/stderr to kubectl logs promptly
+            - name: PYTHONUNBUFFERED 
+              value: "1"
+            # Tell XLA where ROCm's LLVM toolchain is installed.
+            # https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.1/install/3rd-party/jax-install.html
+            - name: LLVM_PATH
+              value: "/opt/rocm/llvm"
+            # access the api keys stored in the cluster's secret
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: HF_TOKEN
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: WANDB_API_KEY
+
+          volumeMounts:
+            # RCCL (ROCm's NCCL) moves tensors between the 8 ranks through
+            # /dev/shm; the kubernetes default of 64Mi is far too small and
+            # fails at startup
+            - name: shm
+              mountPath: /dev/shm
+            # the cluster's shared volume, mounted at the same path on every
+            # node (see the volume below)
+            - name: shared # this much match volume name below
+              mountPath: /mnt/shared
+
+          workingDir: /workspace # Initial directory for the startup shell
+
+          command: ["bash", "-c"] # execute a shell string.
+          args:
+            - | # YAML literal block preserves the shell script newlines.
+              
+              set -euo pipefail
+              
+              git clone https://github.com/aklein4/nc-baseline.git
+              cd nc-baseline
+
+              python3 -m pip install "uv==$(cat .uv-version)"
+
+              # Use uv.lock without changing it, add ROCm dependencies, omit dev tools
+              uv sync --locked --extra rocm --no-dev --python "$(cat .python-version)"
+
+              # exec replaces Bash with the launcher so its exit status is the job's
+              # --no-sync to avoid messing with the uv env since rocm is not specified in run
+              exec uv run --no-sync python src/train.py \
+                --config-name=horizon-lm-mi-8 \
+                name=full-baseline \
+                
+      volumes:
+        - name: shm
+          emptyDir: { medium: Memory, sizeLimit: 8Gi }
+        - name: shared
+          # no `type`: a node without the shared volume must not fail the
+          # job — the script checks what is mounted and skips the file
+          hostPath:
+            path: /mnt/shared
