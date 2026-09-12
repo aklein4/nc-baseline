@@ -256,7 +256,9 @@ def flash_attention(
         # specific wheel is installed. https://github.com/ROCm/jax-aiter
         from jax_aiter.mha import flash_attn_func
 
-        return flash_attn_func(query, key, value, causal=causal)
+        # The pinned JAX-AITER API returns (output,) with auxiliary outputs off.
+        (output,) = flash_attn_func(query, key, value, causal=causal)
+        return output
     if backend == "portable":
         if query.shape[1] != key.shape[1] and mask is None and not causal:
             return jax.nn.dot_product_attention(
