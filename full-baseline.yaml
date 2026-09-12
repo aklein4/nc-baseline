@@ -96,6 +96,10 @@ spec:
               exec uv run --no-sync python src/train.py \
                 --config-name=horizon-lm-mi-8 \
                 name=full-baseline \
+                initialization=null \
+                data=synthetic-lm \
+                data.collator.episodes=2 \
+                distributed.initialize=false
                 
       volumes:
         - name: shm
