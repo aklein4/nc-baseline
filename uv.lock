@@ -728,23 +728,6 @@ tpu = [
 ]
 
 [[package]]
-name = "jax-aiter"
-version = "0.1.0a0"
-source = { url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl" }
-wheels = [
-    { url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl", hash = "sha256:f4c9846f95b36c91338eb4b33a7d45becc268d89343dfcf341e3dd341592775f" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "black", marker = "extra == 'dev'" },
-    { name = "flake8", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "torch", marker = "extra == 'examples'" },
-]
-provides-extras = ["dev", "examples"]
-
-[[package]]
 name = "jax-cuda12-pjrt"
 version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1908,7 +1891,6 @@ cuda13 = [
 rocm = [
     { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version < '3.12'" },
     { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version >= '3.12'" },
-    { name = "jax-aiter", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 tpu = [
     { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "python_full_version < '3.12'" },
@@ -1934,7 +1916,6 @@ requires-dist = [
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.8.0" },
     { name = "jax", extras = ["rocm7-local"], marker = "extra == 'rocm'", specifier = ">=0.8.0" },
     { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'", specifier = ">=0.8.0" },
-    { name = "jax-aiter", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "optax", specifier = ">=0.2.6" },
     { name = "orbax-checkpoint", specifier = ">=0.11.20" },

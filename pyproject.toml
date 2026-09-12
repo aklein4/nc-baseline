@@ -23,11 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["jax[cuda12]>=0.8.0"]
 cuda13 = ["jax[cuda13]>=0.8.0"]
-rocm = [
-    "jax[rocm7-local]>=0.8.0",
-    # Full MI355X/gfx950 wheel, including FlashAttention and GEMM bindings.
-    "jax-aiter @ https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
+rocm = ["jax[rocm7-local]>=0.8.0"]
 tpu = ["jax[tpu]>=0.8.0"]
 
 [dependency-groups]
