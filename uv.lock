@@ -728,6 +728,23 @@ tpu = [
 ]
 
 [[package]]
+name = "jax-aiter"
+version = "0.1.0a0"
+source = { url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl" }
+wheels = [
+    { url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl", hash = "sha256:f4c9846f95b36c91338eb4b33a7d45becc268d89343dfcf341e3dd341592775f" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'dev'" },
+    { name = "flake8", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "torch", marker = "extra == 'examples'" },
+]
+provides-extras = ["dev", "examples"]
+
+[[package]]
 name = "jax-cuda12-pjrt"
 version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1858,6 +1875,86 @@ wheels = [
 ]
 
 [[package]]
+name = "outer-loop-jax"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "datasets" },
+    { name = "flax", version = "0.12.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "flax", version = "0.12.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "huggingface-hub" },
+    { name = "hydra-core" },
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "jinja2" },
+    { name = "optax" },
+    { name = "orbax-checkpoint" },
+    { name = "python-dotenv" },
+    { name = "safetensors" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "wandb" },
+]
+
+[package.optional-dependencies]
+cuda = [
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version >= '3.12'" },
+]
+cuda13 = [
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version >= '3.12'" },
+]
+rocm = [
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version >= '3.12'" },
+    { name = "jax-aiter", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+tpu = [
+    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "python_full_version < '3.12'" },
+    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "python_full_version >= '3.12'" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "black" },
+    { name = "isort" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "datasets", specifier = ">=4.0.0" },
+    { name = "flax", specifier = ">=0.12.0" },
+    { name = "huggingface-hub", specifier = ">=0.34.0" },
+    { name = "hydra-core", specifier = ">=1.3.2" },
+    { name = "jax", specifier = ">=0.8.0" },
+    { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'", specifier = ">=0.8.0" },
+    { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.8.0" },
+    { name = "jax", extras = ["rocm7-local"], marker = "extra == 'rocm'", specifier = ">=0.8.0" },
+    { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'", specifier = ">=0.8.0" },
+    { name = "jax-aiter", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", url = "https://github.com/ROCm/jax-aiter/releases/download/v0.1.0-alpha/jax_aiter-0.1.0a0-cp312-cp312-linux_x86_64.whl" },
+    { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "optax", specifier = ">=0.2.6" },
+    { name = "orbax-checkpoint", specifier = ">=0.11.20" },
+    { name = "python-dotenv", specifier = ">=1.1.0" },
+    { name = "safetensors", specifier = ">=0.6.0" },
+    { name = "tqdm", specifier = ">=4.67.0" },
+    { name = "transformers", specifier = ">=4.55.0" },
+    { name = "wandb", specifier = ">=0.21.0" },
+]
+provides-extras = ["cuda", "cuda13", "rocm", "tpu"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=25.1.0" },
+    { name = "isort", specifier = ">=6.0.0" },
+    { name = "pytest", specifier = ">=8.4.0" },
+    { name = "ruff", specifier = ">=0.12.0" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2693,84 +2790,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f0/2a/d13d3c38862632742d2fe2f7ae307c431db06538fd05ca03020d207b5dcc/treescope-0.1.10.tar.gz", hash = "sha256:20f74656f34ab2d8716715013e8163a0da79bdc2554c16d5023172c50d27ea95", size = 138870, upload-time = "2025-08-08T05:43:48.048Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/43/2b/36e984399089c026a6499ac8f7401d38487cf0183839a4aa78140d373771/treescope-0.1.10-py3-none-any.whl", hash = "sha256:dde52f5314f4c29d22157a6fe4d3bd103f9cae02791c9e672eefa32c9aa1da51", size = 182255, upload-time = "2025-08-08T05:43:46.673Z" },
-]
-
-[[package]]
-name = "outer-loop-jax"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "datasets" },
-    { name = "flax", version = "0.12.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "flax", version = "0.12.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "huggingface-hub" },
-    { name = "hydra-core" },
-    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "jinja2" },
-    { name = "optax" },
-    { name = "orbax-checkpoint" },
-    { name = "python-dotenv" },
-    { name = "safetensors" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "wandb" },
-]
-
-[package.optional-dependencies]
-cuda = [
-    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version < '3.12'" },
-    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["cuda12"], marker = "python_full_version >= '3.12'" },
-]
-cuda13 = [
-    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version < '3.12'" },
-    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version >= '3.12'" },
-]
-rocm = [
-    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version < '3.12'" },
-    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["rocm7-local"], marker = "python_full_version >= '3.12'" },
-]
-tpu = [
-    { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "python_full_version < '3.12'" },
-    { name = "jax", version = "0.11.1", source = { registry = "https://pypi.org/simple" }, extra = ["tpu"], marker = "python_full_version >= '3.12'" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "black" },
-    { name = "isort" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=4.0.0" },
-    { name = "flax", specifier = ">=0.12.0" },
-    { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "hydra-core", specifier = ">=1.3.2" },
-    { name = "jax", specifier = ">=0.8.0" },
-    { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'", specifier = ">=0.8.0" },
-    { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.8.0" },
-    { name = "jax", extras = ["rocm7-local"], marker = "extra == 'rocm'", specifier = ">=0.8.0" },
-    { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'", specifier = ">=0.8.0" },
-    { name = "jinja2", specifier = ">=3.1.0" },
-    { name = "optax", specifier = ">=0.2.6" },
-    { name = "orbax-checkpoint", specifier = ">=0.11.20" },
-    { name = "python-dotenv", specifier = ">=1.1.0" },
-    { name = "safetensors", specifier = ">=0.6.0" },
-    { name = "tqdm", specifier = ">=4.67.0" },
-    { name = "transformers", specifier = ">=4.55.0" },
-    { name = "wandb", specifier = ">=0.21.0" },
-]
-provides-extras = ["cuda", "cuda13", "rocm", "tpu"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "black", specifier = ">=25.1.0" },
-    { name = "isort", specifier = ">=6.0.0" },
-    { name = "pytest", specifier = ">=8.4.0" },
-    { name = "ruff", specifier = ">=0.12.0" },
 ]
 
 [[package]]

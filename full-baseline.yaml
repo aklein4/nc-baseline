@@ -88,6 +88,14 @@ spec:
               # Use uv.lock without changing it, add ROCm dependencies, omit dev tools
               uv sync --locked --extra rocm --no-dev --python "$(cat .python-version)"
 
+              # Fail before loading the model if the native bindings cannot load.
+              # This release predates our locked JAX; kernel compatibility still
+              # requires a GPU run. GEMM is available but needs explicit model calls.
+              uv run --no-sync python -c 'from jax_aiter.mha import flash_attn_func; from jax_aiter.gemm import gemm; print("JAX-AITER imports: OK", flush=True)'
+
+              # there's probably a better way to do this
+              echo "HF_ID=aklein4" > .env
+
               # exec replaces Bash with the launcher so its exit status is the job's
               # --no-sync to avoid messing with the uv env since rocm is not specified in run
               exec uv run --no-sync python src/train.py \
