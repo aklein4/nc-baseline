@@ -21,4 +21,4 @@ rope:
 rms_norm_eps: 1.0e-5
 compute_dtype: bfloat16
 gradient_checkpointing: true
-attention_backend: aiter
+attention_backend: portable
