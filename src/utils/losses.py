@@ -94,18 +94,24 @@ def frozen_head_lm_loss(
     masks: jax.Array,
     objective_weights: jax.Array,
     chunks: int = 1,
+    *,
+    normalizer: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
-    """Weighted per-example objective with an immediate frozen-head backward.
+    """Weighted objective with an immediate frozen-head backward.
 
     Returns the differentiable scalar objective and nondifferentiable per-mask
     loss metrics. Only hidden states receive gradients. Each chunk computes its
     loss and hidden-state cotangent together, retaining no vocabulary residuals
     and requiring no head recomputation in the outer backward.
+    A supplied normalizer divides token sums for every mask; otherwise masks
+    are normalized per example before averaging over the batch.
     """
     masks = masks[:, 1:].astype(jnp.float32)
-    weights = masks / (
-        jnp.maximum(masks.sum(axis=1, keepdims=True), 1) * input_ids.shape[0]
-    )
+    if normalizer is None:
+        normalizer = (
+            jnp.maximum(masks.sum(axis=1, keepdims=True), 1) * input_ids.shape[0]
+        )
+    weights = masks / jnp.where(normalizer > 0, normalizer, 1)
     shape = states.shape
 
     def evaluate(hidden: jax.Array, head_params: PyTree) -> Any:
