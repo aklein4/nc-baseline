@@ -24,7 +24,7 @@ spec:
     spec:
 
       restartPolicy: Never # Do not restart an exited container within this pod, async with backoff so must be set to avoid retrying
-      
+
       tolerations: 
         - key: amd.com/gpu # Match the GPU-node taint used by the NC cluster
           operator: Exists # no specific value, just the presence of the taint key
@@ -96,10 +96,10 @@ spec:
               exec uv run --no-sync python src/train.py \
                 --config-name=horizon-lm-mi-8 \
                 name=full-baseline \
-                initialization=null \
+                distributed.initialize=false \
                 data=synthetic-lm \
                 data.collator.episodes=2 \
-                distributed.initialize=false
+                initialization=null
                 
       volumes:
         - name: shm
