@@ -184,12 +184,18 @@ class BaseTrainer:
             checkpoint_dir = (
                 Path(self.config.run_dir).expanduser().resolve() / "checkpoints"
             )
+
         metadata = {} if metadata is None else metadata
         iterator = iter(batches)
         start = monotonic()
         last_step_time = start
         step_durations: deque[float] = deque(maxlen=10)
         atoms_seen = 0
+        step_fn = None
+
+        jax.block_until_ready((self.params, self.opt_state))
+        logger.info("Starting training loop at step %d", self.step)
+
         while self.step < int(self.config.max_steps):
             try:
                 batch = next(iterator)
@@ -197,7 +203,13 @@ class BaseTrainer:
                 raise RuntimeError(
                     "dataset exhausted before trainer.max_steps was reached"
                 ) from error
-            self.params, self.opt_state, metrics = self.train_step(
+
+            if step_fn is None:
+                logger.info("Compiling first training step...")
+                step_fn = self.train_step.lower(self.params, self.opt_state, jnp.asarray(self.step), batch).compile()
+                logger.info("Compilation complete; executing first training step...")
+                
+            self.params, self.opt_state, metrics = step_fn(
                 self.params, self.opt_state, jnp.asarray(self.step), batch
             )
             self.step += 1
