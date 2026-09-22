@@ -83,7 +83,7 @@ spec:
           args:
             - | # YAML literal block preserves the shell script newlines.
               
-              set -euo pipefail
+              set -euxo pipefail
               
               git clone https://github.com/aklein4/nc-baseline.git
               cd nc-baseline
