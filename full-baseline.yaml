@@ -60,6 +60,11 @@ spec:
                 secretKeyRef:
                   name: api-keys
                   key: WANDB_API_KEY
+            - name: HF_ID
+              valueFrom:
+                secretKeyRef:
+                  name: api-keys
+                  key: HF_ID
 
           volumeMounts:
             # RCCL (ROCm's NCCL) moves tensors between the 8 ranks through
@@ -87,9 +92,6 @@ spec:
 
               # Use uv.lock without changing it, add ROCm dependencies, omit dev tools
               uv sync --locked --extra rocm --no-dev --python "$(cat .python-version)"
-
-              # there's probably a better way to do this
-              echo "HF_ID=aklein4" > .env
 
               # exec replaces Bash with the launcher so its exit status is the job's
               # --no-sync to avoid messing with the uv env since rocm is not specified in run
