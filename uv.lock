@@ -663,22 +663,22 @@ with-cuda = [
 
 [[package]]
 name = "jax-rocm7-pjrt"
-version = "0.11.0.post1"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/4f/e362d6b14ecd44a29ae0136e7114b63c5a3894c7d1dacd37a1596278e713/jax_rocm7_pjrt-0.11.0.post1-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:2d4684afa985a4bf27a3d01b429d3838412e63645bf87effada37ef42996d3ec", size = 127446819, upload-time = "2026-08-13T17:29:35.65Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/9e/b79e3ce5039030670024340b59f5c43cdecb6e7cc221d32a116230e24ff8/jax_rocm7_pjrt-0.11.0-py3-none-manylinux_2_27_x86_64.whl", hash = "sha256:ffc5f111a003a816ede52e5bb7e9826865270b920a4ede1850bc2c993bec246b", size = 122662003, upload-time = "2026-07-16T21:33:36.795Z" },
 ]
 
 [[package]]
 name = "jax-rocm7-plugin"
-version = "0.11.0.post1"
+version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax-rocm7-pjrt", marker = "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/57/91e86eb973af9bc2de3cc0f2355b377d2026c8e351c0ac341f9e15f98c51/jax_rocm7_plugin-0.11.0.post1-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:44990b2b432db8a9ebd152d261eb59b8f1cdfb6791defc432274ba7360574a11", size = 3845418, upload-time = "2026-08-13T17:29:38.664Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/43/eec857ec636c255cb33b01725cbcfaace3337e62e0b1083da9ba494cd8fd/jax_rocm7_plugin-0.11.0.post1-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:82feb3bc89626a36e9740b451fb0905fca28e765cbd5acb3eb97c3cc78bf6aaa", size = 3845204, upload-time = "2026-08-13T17:29:40.252Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/72/9d0face628c9624e83185219b1bdc78c26a2660a31a3362083e4801d91bf/jax_rocm7_plugin-0.11.0-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:c90428da60dd8f3b4a3dcbe9180bd5c5d18f1a9b90817e443fe04a020815b060", size = 3822004, upload-time = "2026-07-16T21:33:40.191Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/4c/c1470c211a2b7228d4c32f9fc3ed39140f8f7146fa0a47e044e4e8103180/jax_rocm7_plugin-0.11.0-cp313-cp313-manylinux_2_27_x86_64.whl", hash = "sha256:e457d6479510fa0b5983568cbcfa28557e800ce2d07af7665a4ebade9380f426", size = 3821793, upload-time = "2026-07-16T21:33:41.731Z" },
 ]
 
 [[package]]
@@ -1392,8 +1392,8 @@ requires-dist = [
     { name = "jax", extras = ["cuda12"], marker = "extra == 'cuda'", specifier = ">=0.8.0" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda13'", specifier = ">=0.8.0" },
     { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'", specifier = ">=0.8.0" },
-    { name = "jax-rocm7-pjrt", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", specifier = "==0.11.0.post1" },
-    { name = "jax-rocm7-plugin", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", specifier = "==0.11.0.post1" },
+    { name = "jax-rocm7-pjrt", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", specifier = "==0.11.0" },
+    { name = "jax-rocm7-plugin", marker = "python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'rocm'", specifier = "==0.11.0" },
     { name = "jaxlib", marker = "extra == 'rocm'", specifier = "==0.11.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "optax", specifier = ">=0.2.6" },

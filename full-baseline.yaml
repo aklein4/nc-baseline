@@ -34,16 +34,12 @@ spec:
       containers:
         - name: train
 
-          # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
-          # Our startup script installs JAX separately; training does not use PyTorch.
-          # rocm7.14 GA (no ".1"): the exact ROCm line jax-aiter's
-          # release/v0.1.0-alpha2 branch targets, paired with jax==0.11.0
-          # below. Same TheRock-SDK packaging family as rocm7.14.1, so the
-          # LD_LIBRARY_PATH/LLVM_PATH below are a carried-over bet, not yet
-          # confirmed for this exact tag -- check `jax.devices()` via
-          # kubectl exec before trusting a full run, same as when we first
-          # moved onto 7.14.1.
-          image: rocm/pytorch:rocm7.14_ubuntu24.04_py3.12_pytorch_release_2.12.0
+          # jax-aiter's Makefile can't find hipcc in the rocm/pytorch runtime
+          # image (only the TheRock *dev* image wires hipcc through
+          # rocm-sdk) -- switched to AMD's dev image for that reason.
+          # Verified working (build + import) in a standalone diagnostic
+          # job before this integration; see docs/worklog.md.
+          image: ghcr.io/rocm/jax-dev-ubu24.therock-7.14:7.14
 
           resources:
             limits:
@@ -53,12 +49,15 @@ spec:
             # send python stdout/stderr to kubectl logs promptly
             - name: PYTHONUNBUFFERED 
               value: "1"
-            # Tell XLA where ROCm's LLVM toolchain is installed.
-            # https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.1/install/3rd-party/jax-install.html
-            - name: LLVM_PATH
-              value: "/opt/venv/lib/python3.12/site-packages/_rocm_sdk_core/lib/llvm"
-            - name: LD_LIBRARY_PATH
-              value: "/opt/venv/lib/python3.12/site-packages/_rocm_sdk_core/lib:/opt/venv/lib/python3.12/site-packages/_rocm_sdk_libraries/lib"
+            # NOTE: no LLVM_PATH/LD_LIBRARY_PATH override here (unlike the
+            # rocm/pytorch runtime images) -- this dev image's system-wide
+            # _rocm_sdk_core is registered via ldconfig, confirmed working
+            # in the standalone build diagnostic without one. Our own
+            # uv-managed .venv installs a SEPARATE copy of _rocm_sdk_core
+            # that ldconfig won't know about -- verify `jax.devices()` via
+            # kubectl exec once the pod is up; add an override pointing at
+            # .venv/lib/python3.12/site-packages/_rocm_sdk_{core,libraries}/lib
+            # if devices aren't found.
             # access the api keys stored in the cluster's secret
             - name: HF_TOKEN
               valueFrom:
@@ -105,12 +104,42 @@ spec:
 
               uv sync --locked --extra rocm --no-dev --python "$(cat .python-version)"
 
+              # Build jax-aiter from source into the SAME venv training uses,
+              # so `from jax_aiter.mha import flash_attn_func` (already in
+              # src/utils/attention_utils.py) resolves at train time.
+              # release/v0.1.0-alpha2 targets exactly the jax==0.11.0 pinned
+              # above. Verified end-to-end in a standalone diagnostic job
+              # first (docs/worklog.md) -- this repeats those exact steps.
+              # `source .venv/bin/activate` makes plain python3/pip/make
+              # resolve inside the venv instead of system site-packages.
+              source .venv/bin/activate
+              pip install cmake ninja pyyaml zstandard pandas
+
+              git clone --recursive -b release/v0.1.0-alpha2 https://github.com/ROCm/jax-aiter.git
+              (
+                cd jax-aiter
+                export JA_ROOT_DIR="$PWD"
+                export GPU_ARCHS=gfx950
+                export AITER_SYMBOL_VISIBLE=1
+
+                # Downloads AMD's prebuilt MHA/rmsnorm JIT libs (matches this
+                # branch's pinned aiter submodule commit exactly) instead of
+                # the multi-hour from-scratch JIT build.
+                bash ci/fetch_jit_libs.sh
+
+                make
+                make ja_mods
+                JA_WHEEL_VARIANT=full python3 -m pip install .
+              )
+              python3 -c "from jax_aiter.mha import flash_attn_func; print('JAX-AITER: OK')"
+
               # exec replaces Bash with the launcher so its exit status is the job's
               # --no-sync to avoid messing with the uv env since rocm is not specified in run
               exec uv run --no-sync python src/train.py \
                 --config-name=horizon-lm-mi-8 \
                 name=full-baseline \
-                distributed.initialize=false
+                distributed.initialize=false \
+                model.attention_backend=auto
                 
       volumes:
         - name: shm
