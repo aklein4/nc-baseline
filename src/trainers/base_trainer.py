@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from jax.experimental import multihost_utils
+from jax.sharding import Mesh
 from omegaconf import DictConfig, OmegaConf
 
 from models.base import CustomModel
@@ -50,11 +51,13 @@ class BaseTrainer:
         config: DictConfig,
         params: PyTree,
         labels: PyTree | None = None,
+        mesh: Mesh | None = None,
     ) -> None:
         """Initialize trainable values and compile the concrete step function."""
         self.model = model
         self.config = config
         self.labels = labels
+        self.mesh = mesh
         self.validate_config()
         self.tx, self.schedules = make_optimizer(
             config, labels, model=model, params=params

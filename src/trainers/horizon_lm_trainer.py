@@ -9,9 +9,12 @@ from typing import Any, ClassVar
 
 import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 
 from trainers.base_trainer import BaseTrainer
 from utils.losses import chunked_lm_loss
+from utils.mesh_utils import get_batch_sharding
 from utils.optimizer_utils import FROZEN
 from utils.tree_utils import tree_add, tree_labels, tree_zeros
 from utils.typing_utils import PyTree
@@ -75,13 +78,13 @@ class HorizonLMTrainer(BaseTrainer):
         "groups.slow.lr",
     ]
 
-    def __init__(self, model: Any, config: Any, params: PyTree) -> None:
+    def __init__(self, model: Any, config: Any, params: PyTree, mesh: Mesh) -> None:
         labels = tree_labels(
             params,
             {FROZEN: ("embed_tokens", "lm_head")},
             "slow",
         )
-        super().__init__(model, config, params, labels)
+        super().__init__(model, config, params, labels, mesh=mesh)
 
     def _episode_loss(
         self, params: PyTree, batch: dict[str, jax.Array]
@@ -107,25 +110,37 @@ class HorizonLMTrainer(BaseTrainer):
         loss = assistant_loss + float(self.config.aux_loss_weight) * auxiliary_loss
         return loss, (assistant_loss, auxiliary_loss)
 
-    def _train_step(
-        self, params: PyTree, opt_state: PyTree, step: jax.Array, batch: Any
+    def _local_grad_accum(
+        self,
+        params: PyTree,
+        normalizer: jax.Array,
+        input_ids: jax.Array,
+        assistant_mask: jax.Array,
+        attention_mask: jax.Array,
     ) -> Any:
-        assistant = batch["assistant_mask"][..., 1:].astype(jnp.float32)
-        auxiliary = batch["attention_mask"][..., 1:] - assistant
-        normalizer = (assistant + float(self.config.aux_loss_weight) * auxiliary).sum()
-        normalizer = jnp.where(normalizer > 0, normalizer, 1)
+        """Accumulate gradients and per-episode losses over one batch shard.
+
+        Runs under jax.shard_map: every array argument here is this device's
+        LOCAL shard only (params stay replicated). The single jax.lax.psum
+        at the end is the only cross-device collective in the whole step,
+        instead of the one-all-reduce-per-episode (64/step) that automatic
+        SPMD inserted for the equivalent jax.lax.scan. Safe because
+        chunked_lm_loss's reduction is a plain jnp.sum over pre-normalized
+        weights, so local partial sums plus one final psum equal the global
+        sum. See docs/gpu-hang-debugging-log.md Part 14.
+        """
         episodes = tuple(
-            jnp.swapaxes(batch[name], 0, 1)
-            for name in ("input_ids", "assistant_mask", "attention_mask")
+            jnp.swapaxes(value, 0, 1)
+            for value in (input_ids, assistant_mask, attention_mask)
         )
         param_grads = tree_zeros(params)
 
         def body(carry: PyTree, values: Any) -> Any:
-            input_ids, assistant_mask, attention_mask = values
+            local_ids, local_assistant, local_attention = values
             current = {
-                "input_ids": input_ids,
-                "assistant_mask": assistant_mask,
-                "attention_mask": attention_mask,
+                "input_ids": local_ids,
+                "assistant_mask": local_assistant,
+                "attention_mask": local_attention,
                 "loss_normalizer": normalizer,
             }
             (_, losses), grads = jax.value_and_grad(self._episode_loss, has_aux=True)(
@@ -134,6 +149,30 @@ class HorizonLMTrainer(BaseTrainer):
             return tree_add(carry, grads), losses
 
         param_grads, losses = jax.lax.scan(body, param_grads, episodes)
+        return jax.lax.psum((param_grads, losses), axis_name=("data", "fsdp"))
+
+    def _train_step(
+        self, params: PyTree, opt_state: PyTree, step: jax.Array, batch: Any
+    ) -> Any:
+        assistant = batch["assistant_mask"][..., 1:].astype(jnp.float32)
+        auxiliary = batch["attention_mask"][..., 1:] - assistant
+        normalizer = (assistant + float(self.config.aux_loss_weight) * auxiliary).sum()
+        normalizer = jnp.where(normalizer > 0, normalizer, 1)
+
+        batch_spec = get_batch_sharding(self.mesh).spec
+        param_grads, losses = jax.shard_map(
+            self._local_grad_accum,
+            mesh=self.mesh,
+            in_specs=(P(), P(), batch_spec, batch_spec, batch_spec),
+            out_specs=(P(), P()),
+            check_vma=False,
+        )(
+            params,
+            normalizer,
+            batch["input_ids"],
+            batch["assistant_mask"],
+            batch["attention_mask"],
+        )
         metrics = episodic_loss_metrics(
             losses,
             batch["assistant_mask"],

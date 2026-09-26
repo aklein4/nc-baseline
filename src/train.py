@@ -128,6 +128,7 @@ def main(config: DictConfig) -> None:
                 model=model,
                 config=trainer_config,
                 params=params,
+                mesh=mesh,
             )
             if resume:
                 trainer.load_state(checkpoint)
