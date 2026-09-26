@@ -36,7 +36,10 @@ spec:
 
           # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
           # Our startup script installs JAX separately; training does not use PyTorch.
-          image: rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.13.0
+          # rocm7.14.1: recreating the documented-fast (~57s/step) combo
+          # from Part 12. LD_LIBRARY_PATH/LLVM_PATH below already verified
+          # working for this exact tag earlier this session.
+          image: rocm/pytorch:rocm7.14.1_ubuntu24.04_py3.12_pytorch_release_2.13.0
 
           resources:
             limits:
@@ -88,7 +91,9 @@ spec:
               
               set -euxo pipefail
               
-              git clone https://github.com/aklein4/nc-baseline.git
+              # Pinned to this recheck branch so main stays on the
+              # rocm10.0/jax==0.11.2 baseline.
+              git clone -b experiment/rocm7141-jax0100-recheck https://github.com/aklein4/nc-baseline.git
               cd nc-baseline
 
               python3 -m pip install "uv==$(cat .uv-version)"
