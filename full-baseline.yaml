@@ -47,8 +47,26 @@ spec:
 
           env: # Environment variables visible to the shell and its subprocesses.
             # send python stdout/stderr to kubectl logs promptly
-            - name: PYTHONUNBUFFERED 
+            - name: PYTHONUNBUFFERED
               value: "1"
+            # Which physical node actually ran this -- printed in the
+            # diagnostics block below. Node identity/hardware isn't
+            # guaranteed stable run-to-run on this marketplace, and we've
+            # lost hours before to a run silently landing on different
+            # hardware than a prior "working" run with no record of either.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Node name alone isn't a reliable hardware identity: names on
+            # this marketplace could be reused for different physical
+            # machines over time. hostIP disambiguates that; GPU uniqueId
+            # (below, from rocm-smi) is the strongest signal since it's
+            # tied to the actual silicon.
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
             # NOTE: no LLVM_PATH/LD_LIBRARY_PATH override here (unlike the
             # rocm/pytorch runtime images) -- this dev image's system-wide
             # _rocm_sdk_core is registered via ldconfig, confirmed working
@@ -93,7 +111,25 @@ spec:
             - | # YAML literal block preserves the shell script newlines.
               
               set -euxo pipefail
-              
+
+              # Node/GPU diagnostics, first thing, so a run that behaves
+              # differently than a prior one has something to compare
+              # against without needing a live kubectl exec investigation.
+              # Runs before anything else can fail. `|| true` on every
+              # rocm-smi call: a diagnostics hiccup must never abort the job.
+              echo "=== node: ${NODE_NAME} (${NODE_IP}) | $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+              echo "=== host kernel/OS ==="
+              uname -a || true
+              echo "=== GPU product / firmware ==="
+              rocm-smi --showproductname --showuniqueid --showvbios --showdriverversion || true
+              echo "=== GPU topology (link type / hops) ==="
+              rocm-smi --showtopo || true
+              echo "=== GPU concise status (temp/clock/power/util) ==="
+              rocm-smi || true
+              echo "=== RAS/ECC error counts ==="
+              rocm-smi --showrasinfo all || true
+              echo "=== end diagnostics ==="
+
               # Pinned to this experiment branch so main stays on the
               # confirmed rocm10.0/jax==0.11.2 baseline while this
               # rocm7.14-GA/jax==0.11.0 combo is being tried.
