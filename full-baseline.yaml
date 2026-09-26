@@ -36,7 +36,14 @@ spec:
 
           # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
           # Our startup script installs JAX separately; training does not use PyTorch.
-          image: rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.13.0
+          # rocm7.14 GA (no ".1"): the exact ROCm line jax-aiter's
+          # release/v0.1.0-alpha2 branch targets, paired with jax==0.11.0
+          # below. Same TheRock-SDK packaging family as rocm7.14.1, so the
+          # LD_LIBRARY_PATH/LLVM_PATH below are a carried-over bet, not yet
+          # confirmed for this exact tag -- check `jax.devices()` via
+          # kubectl exec before trusting a full run, same as when we first
+          # moved onto 7.14.1.
+          image: rocm/pytorch:rocm7.14_ubuntu24.04_py3.12_pytorch_release_2.12.0
 
           resources:
             limits:
@@ -88,7 +95,10 @@ spec:
               
               set -euxo pipefail
               
-              git clone https://github.com/aklein4/nc-baseline.git
+              # Pinned to this experiment branch so main stays on the
+              # confirmed rocm10.0/jax==0.11.2 baseline while this
+              # rocm7.14-GA/jax==0.11.0 combo is being tried.
+              git clone -b experiment/rocm714-ga-jax0110 https://github.com/aklein4/nc-baseline.git
               cd nc-baseline
 
               python3 -m pip install "uv==$(cat .uv-version)"

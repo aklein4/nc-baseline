@@ -26,13 +26,15 @@ dependencies = [
 cuda = ["jax[cuda12]>=0.8.0"]
 cuda13 = ["jax[cuda13]>=0.8.0"]
 rocm = [
-    # Validated combo: ROCm 10.0 / jax 0.11.2. AMD's rocm-jax-v0.11.2
-    # release notes confirm this JAX version validates against
-    # theRock10.0.0.
-    "jax==0.11.2",
-    "jaxlib==0.11.2",
-    "jax-rocm10-pjrt==0.11.2 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "jax-rocm10-plugin==0.11.2 ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # Experiment branch: ROCm 7.14 GA / jax 0.11.0. This is the exact stack
+    # jax-aiter's release/v0.1.0-alpha2 branch README declares as its one
+    # tested target (github.com/ROCm/jax-aiter) -- aiter's own wheel isn't
+    # published yet (from-source only), but pinning this combo now means
+    # we're ready the moment it is, without another version hunt.
+    "jax==0.11.0",
+    "jaxlib==0.11.0",
+    "jax-rocm7-pjrt==0.11.0.post1 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "jax-rocm7-plugin==0.11.0.post1 ; python_version == '3.12' and sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 tpu = ["jax[tpu]>=0.8.0"]
 
