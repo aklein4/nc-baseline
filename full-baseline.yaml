@@ -38,8 +38,10 @@ spec:
           # Our startup script installs JAX separately; training does not use PyTorch.
           # rocm7.14.1: recreating the documented-fast (~57s/step) combo
           # from Part 12. LD_LIBRARY_PATH/LLVM_PATH below already verified
-          # working for this exact tag earlier this session.
-          image: rocm/pytorch:rocm7.14.1_ubuntu24.04_py3.12_pytorch_release_2.13.0
+          # working for this ROCm line (same TheRock-SDK packaging family).
+          # pytorch_release_2.13.0 (originally used) has since been removed
+          # from Docker Hub; 2.12.0 is the newest still-published variant.
+          image: rocm/pytorch:rocm7.14.1_ubuntu24.04_py3.12_pytorch_release_2.12.0
 
           resources:
             limits:
