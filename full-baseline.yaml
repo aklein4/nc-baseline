@@ -110,10 +110,13 @@ spec:
               # release/v0.1.0-alpha2 targets exactly the jax==0.11.0 pinned
               # above. Verified end-to-end in a standalone diagnostic job
               # first (docs/worklog.md) -- this repeats those exact steps.
-              # `source .venv/bin/activate` makes plain python3/pip/make
-              # resolve inside the venv instead of system site-packages.
+              # `source .venv/bin/activate` makes plain python3/make resolve
+              # inside the venv (needed for the Makefile's internal python3
+              # calls). uv-managed venvs have no `pip` module at all, though
+              # -- use `uv pip install` (targets $VIRTUAL_ENV, set by the
+              # activate script above) for every install from here on.
               source .venv/bin/activate
-              pip install cmake ninja pyyaml zstandard pandas
+              uv pip install cmake ninja pyyaml zstandard pandas
 
               git clone --recursive -b release/v0.1.0-alpha2 https://github.com/ROCm/jax-aiter.git
               (
@@ -129,7 +132,7 @@ spec:
 
                 make
                 make ja_mods
-                JA_WHEEL_VARIANT=full python3 -m pip install .
+                JA_WHEEL_VARIANT=full uv pip install .
               )
               python3 -c "from jax_aiter.mha import flash_attn_func; print('JAX-AITER: OK')"
 
