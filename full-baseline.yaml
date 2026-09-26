@@ -24,8 +24,9 @@ spec:
     spec:
 
       restartPolicy: Never # Do not restart an exited container within this pod, async with backoff so must be set to avoid retrying
+      terminationGracePeriodSeconds: 60 # Give the process 60s to checkpoint on a preemption SIGTERM before SIGKILL
 
-      tolerations: 
+      tolerations:
         - key: amd.com/gpu # Match the GPU-node taint used by the NC cluster
           operator: Exists # no specific value, just the presence of the taint key
           effect: NoSchedule # don't schedule any pods that don't match
@@ -35,7 +36,7 @@ spec:
 
           # Published image providing Ubuntu, Python 3.12, ROCm, and PyTorch.
           # Our startup script installs JAX separately; training does not use PyTorch.
-          image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+          image: rocm/pytorch:rocm10.0_ubuntu24.04_py3.12_pytorch_release_2.13.0
 
           resources:
             limits:
@@ -48,7 +49,9 @@ spec:
             # Tell XLA where ROCm's LLVM toolchain is installed.
             # https://rocm.docs.amd.com/projects/install-on-linux/en/docs-7.2.1/install/3rd-party/jax-install.html
             - name: LLVM_PATH
-              value: "/opt/rocm/llvm"
+              value: "/opt/venv/lib/python3.12/site-packages/_rocm_sdk_core/lib/llvm"
+            - name: LD_LIBRARY_PATH
+              value: "/opt/venv/lib/python3.12/site-packages/_rocm_sdk_core/lib:/opt/venv/lib/python3.12/site-packages/_rocm_sdk_libraries/lib"
             # access the api keys stored in the cluster's secret
             - name: HF_TOKEN
               valueFrom:
@@ -90,7 +93,6 @@ spec:
 
               python3 -m pip install "uv==$(cat .uv-version)"
 
-              # Use uv.lock without changing it, add ROCm dependencies, omit dev tools
               uv sync --locked --extra rocm --no-dev --python "$(cat .python-version)"
 
               # exec replaces Bash with the launcher so its exit status is the job's
@@ -98,10 +100,7 @@ spec:
               exec uv run --no-sync python src/train.py \
                 --config-name=horizon-lm-mi-8 \
                 name=full-baseline \
-                distributed.initialize=false \
-                data=synthetic-lm \
-                data.collator.episodes=2 \
-                initialization=null
+                distributed.initialize=false
                 
       volumes:
         - name: shm
