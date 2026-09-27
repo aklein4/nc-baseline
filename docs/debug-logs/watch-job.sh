@@ -25,6 +25,31 @@ if ! kubectl get job "$JOB" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Capture the as-run spec immediately. The manifests get edited between
+# launches, and the cluster applies them from the working tree rather than
+# from a commit, so without this there is no way to tell afterwards what
+# config a given run actually used -- and once the job is deleted the
+# cluster cannot tell you either. Pull it from the API, not from the local
+# file, so it is ground truth including anything the admission webhooks
+# injected (queue name, suspend, the marketplace request selector).
+ASRUN="$REPO/docs/debug-logs/${JOB}-AS-RUN.yaml"
+kubectl get job "$JOB" -o yaml 2>/dev/null | python3 -c "
+import sys, yaml
+d = yaml.safe_load(sys.stdin)
+if d:
+    d['metadata'] = {k: v for k, v in d['metadata'].items() if k in ('name','labels')}
+    d.pop('status', None)
+    sys.stdout.write('# AS-RUN capture from the live cluster (kubectl get job -o yaml).\n')
+    yaml.safe_dump(d, sys.stdout, sort_keys=False, width=100)
+" > "$ASRUN" 2>/dev/null && log "as-run spec captured: ${ASRUN##*/}"
+
+# Record the working-tree state too: the job clones src/ from GitHub at this
+# commit, and a dirty tree means the YAML may not match anything committed.
+{
+  echo "# git HEAD at launch: $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null)"
+  echo "# working tree: $(git -C "$REPO" status --porcelain 2>/dev/null | wc -l | tr -d ' ') modified path(s)"
+} >> "$ASRUN" 2>/dev/null
+
 POD=""
 for _ in $(seq 1 180); do
   POD=$(kubectl get pods -l job-name="$JOB" \
