@@ -13,7 +13,11 @@ metadata:
 spec:
 
   backoffLimit: 0 # Do not retry a failed run automatically
-  ttlSecondsAfterFinished: 600 # Keep the job/pod for 10 minutes after completion/failure
+  # 10 minutes was too tight for a diagnostic run: if the log stream drops at
+  # the wrong moment the pod is garbage-collected before `kubectl logs` can
+  # recover the evidence, and the whole run is wasted. 2h costs nothing (the
+  # GPUs are released when the pod finishes, not when the record expires).
+  ttlSecondsAfterFinished: 7200
 
   template:
 
@@ -45,10 +49,58 @@ spec:
             limits:
               amd.com/gpu: 8
 
+          # DIAGNOSTIC RUN ONLY. py-spy attaches to the training process to
+          # dump its Python stack while it's stalled -- that needs ptrace,
+          # which Kubernetes drops by default. Without this the watcher loop
+          # below still reports GPU power/util and kernel thread states, but
+          # loses the single most useful signal (which Python frame is stuck).
+          # Drop this block again once the stall is understood.
+          securityContext:
+            capabilities:
+              add: ["SYS_PTRACE"]
+
           env: # Environment variables visible to the shell and its subprocesses.
             # send python stdout/stderr to kubectl logs promptly
             - name: PYTHONUNBUFFERED
               value: "1"
+            # --- DIAGNOSTIC RUN ONLY: observation, no behaviour change ---
+            # Deliberately NOT setting RCCL_MSCCL_ENABLE=0 or NCCL_ALGO here.
+            # Those are fix attempts (see gpu-hang-debugging-log.md Part 7);
+            # applying one now would confound this run, whose only job is to
+            # capture what the stall actually looks like. Fix attempts come
+            # after we know which hypothesis is right.
+            #
+            # RCCL logging. RCCL is AMD's port of NCCL and keeps NCCL's env
+            # var names, so NCCL_DEBUG is the right knob -- there is no
+            # RCCL_DEBUG. (It announces itself as
+            # "NCCL INFO RCCL version : 2.27.7-HEAD" in our own v2 log.)
+            #
+            # Scoped to exclude TUNING specifically. TUNING is what produced
+            # the 288MB log in debug-logs/full-baseline-run-v3.log: 132,483
+            # pre/post/minNChannels triplets, emitted once per collective
+            # call, which at 64 all-reduces/step adds up fast. INIT and ENV
+            # fire once at communicator setup and stay small -- v2, which
+            # logged everything, is only 6,219 lines total.
+            #
+            # INIT is the one that matters here: RCCL's MSCCL lines
+            # ("MSCCL: No external scheduler found, using internal
+            # implementation") are emitted at init, so this shows whether
+            # MSCCL -- the culprit in the original Part 4 hang -- is active
+            # under this image at all.
+            - name: NCCL_DEBUG
+              value: "INFO"
+            - name: NCCL_DEBUG_SUBSYS
+              value: "INIT,ENV"
+            # HIP runtime errors only (level 1). Silent-by-default HIP failures
+            # are exactly what a wedged stream would produce.
+            - name: AMD_LOG_LEVEL
+              value: "1"
+            # Belt-and-braces with the watchdog in utils/data_utils.py: make
+            # the HTTP layer itself give up on a stalled Hub read rather than
+            # relying only on our timeout to notice. A raised error retries
+            # and resumes; a silent hang only gets caught by the watchdog.
+            - name: HF_HUB_DOWNLOAD_TIMEOUT
+              value: "60"
             # Which physical node actually ran this -- printed in the
             # diagnostics block below. Node identity/hardware isn't
             # guaranteed stable run-to-run on this marketplace, and we've
@@ -171,6 +223,132 @@ spec:
                 JA_WHEEL_VARIANT=full uv pip install .
               )
               python3 -c "from jax_aiter.mha import flash_attn_func; print('JAX-AITER: OK')"
+
+              # =============================================================
+              # DIAGNOSTIC BLOCK -- capture what the step-18 stall actually
+              # is. Pure observation: nothing here changes what the training
+              # run computes or which kernels it picks. Remove once resolved.
+              # =============================================================
+
+              uv pip install py-spy
+
+              # (1) Duplicate-ROCm-runtime check, the leading hypothesis.
+              # Our uv venv installs its own _rocm_sdk_core (pulled in by
+              # jax-rocm7-plugin), while jax-aiter is compiled against the
+              # image's SYSTEM ROCm -- which is the whole reason we're on the
+              # dev image. If both get mapped into one process, two copies of
+              # libamdhip64/librccl/libhsa end up managing the same streams,
+              # events and signals: a textbook "runs fine for a while, then
+              # wedges with the GPUs spinning" bug. AITER_SYMBOL_VISIBLE=1
+              # (set in the build above) makes interposition more likely still.
+              # READING THIS: any library below appearing at TWO different
+              # paths is the finding. Runs in a throwaway process first so it
+              # cannot perturb training.
+              cat > /tmp/rocm_dup_check.py <<'PY'
+              import re
+              import jax
+              print("devices:", jax.devices())
+              from jax_aiter.mha import flash_attn_func  # noqa: F401
+              pattern = re.compile(r"libamdhip64|librccl|libhsa-runtime|libamd_comgr|libmha|librocm")
+              paths = set()
+              for line in open("/proc/self/maps"):
+                  fields = line.split()
+                  if len(fields) >= 6 and pattern.search(fields[-1]):
+                      paths.add(fields[-1])
+              print("=== ROCm libraries mapped into a single process ===")
+              for path in sorted(paths):
+                  print("   ", path)
+              PY
+              python3 /tmp/rocm_dup_check.py || true
+
+              # (2) Turn a silent collective hang into a crash with a stack.
+              # An unrecognized flag in XLA_FLAGS aborts startup and flag names
+              # drift between XLA builds, so discover what this jaxlib actually
+              # accepts and set only what exists. The grep output also tells us
+              # the right names to use on future runs.
+              XLA_HELP="$(XLA_FLAGS=--help python3 -c 'import jax; jax.devices()' 2>&1 || true)"
+              echo "=== XLA flags matching timeout/nccl/collective ==="
+              echo "$XLA_HELP" | grep -iE 'timeout|nccl|collective' | head -40 || true
+              EXTRA_XLA=""
+              for flag in xla_gpu_nccl_termination_timeout_seconds xla_gpu_collective_timeout_seconds; do
+                if echo "$XLA_HELP" | grep -q -- "$flag"; then
+                  EXTRA_XLA="$EXTRA_XLA --$flag=900"
+                fi
+              done
+              # Dump the compiled HLO. This costs compile time only -- zero
+              # runtime overhead, so it cannot perturb the race we're trying
+              # to reproduce. Pays for the worklog's open item #2: Part 14
+              # established "64 all-reduces per step" from a CPU simulation
+              # (--xla_force_host_platform_device_count=8), never from the
+              # real compiler on real hardware. The watcher summarises the
+              # optimized module below, which either confirms that number and
+              # gives real byte sizes, or shows the GPU compiler does
+              # something different -- either way it's the input to deciding
+              # whether perf/gradient-sync-shard-map is worth landing.
+              mkdir -p /tmp/hlo
+              EXTRA_XLA="$EXTRA_XLA --xla_dump_to=/tmp/hlo --xla_dump_hlo_as_text"
+
+              echo "=== extra XLA flags for this run: '${EXTRA_XLA}' ==="
+              export XLA_FLAGS="${XLA_FLAGS:-}${EXTRA_XLA}"
+
+              # (3) Heartbeat watcher. The stall is silent by construction:
+              # base_trainer.py only logs AFTER a step completes, so a frozen
+              # run emits nothing at all and we learn nothing from the log.
+              # Every 60s this prints the three things that separate the
+              # hypotheses from each other:
+              #   - power vs. util: a spin-waiting collective pegs util at
+              #     100% while drawing well under TDP; genuine compute draws
+              #     near TDP. rocm-smi's "GPU use" only means a kernel is
+              #     resident, so power is the honest signal.
+              #   - py-spy stack: a frame in next(iterator) or a socket read
+              #     means the host is stuck fetching streaming data; a frame
+              #     in device_get/PJRT means the device is stuck.
+              #   - mapped ROCm library paths, for the REAL training process
+              #     rather than the throwaway probe in (1).
+              # Survives the exec below (separate process, same stdout) and
+              # dies with the pod when training exits.
+              (
+                set +x
+                set +e
+                HLO_SUMMARISED=""
+                while true; do
+                  sleep 60
+                  PID=""
+                  for candidate in $(pgrep -f 'src/train.py' 2>/dev/null); do
+                    case "$(cat /proc/$candidate/comm 2>/dev/null)" in
+                      python*) PID="$candidate"; break;;
+                    esac
+                  done
+                  echo "=== WATCH $(date -u +%H:%M:%SZ) pid=${PID:-none} ==="
+                  # VRAM alongside power/util: HBM headroom is the input to
+                  # every "can we go bigger/faster" question (batch size,
+                  # num_logit_iterations), and no run so far has logged it
+                  # except the old one-off *-vram.log captures.
+                  rocm-smi --showuse --showpower --showmemuse --showmeminfo vram \
+                    2>/dev/null | grep -Ei 'gpu|use|power|vram|memory' | head -40
+                  # One-shot, once the first module has been compiled.
+                  if [ -z "$HLO_SUMMARISED" ]; then
+                    MODULE=$(ls -1t /tmp/hlo/*after_optimizations.txt 2>/dev/null | head -1)
+                    if [ -n "$MODULE" ]; then
+                      echo "--- collectives in optimized HLO ($MODULE) ---"
+                      grep -oE '\b(all-reduce|all-gather|reduce-scatter|collective-permute|all-to-all)(-start|-done)?\b' \
+                        "$MODULE" | sort | uniq -c | sort -rn
+                      echo "--- all-reduce operand shapes (size of each sync) ---"
+                      grep -oE '= *\(?(f32|bf16|f16)\[[0-9,]*\][^=]*all-reduce' "$MODULE" \
+                        | grep -oE '(f32|bf16|f16)\[[0-9,]*\]' | sort | uniq -c | sort -rn | head -20
+                      HLO_SUMMARISED=1
+                    fi
+                  fi
+                  [ -z "$PID" ] && continue
+                  echo "--- ROCm libs mapped in the training process ---"
+                  grep -oE '/[^ ]*(libamdhip64|librccl|libhsa-runtime|libmha)[^ ]*' \
+                    /proc/$PID/maps | sort -u
+                  echo "--- python stack ---"
+                  py-spy dump --pid "$PID" 2>&1 | head -80
+                  echo "--- thread count in GPU-driver wait (kfd_wait_on_events) ---"
+                  grep -l kfd_wait_on_events /proc/$PID/task/*/stack 2>/dev/null | wc -l
+                done
+              ) &
 
               # exec replaces Bash with the launcher so its exit status is the job's
               # --no-sync to avoid messing with the uv env since rocm is not specified in run
