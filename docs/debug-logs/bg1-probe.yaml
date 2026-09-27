@@ -1,0 +1,42 @@
+# Probe: use a node we are already paying for, after the bid was withdrawn.
+#
+# Context (docs/national-compute.md): with the limit price at $0 the market
+# admission check can never pass, so Kueue will never un-suspend a Job --
+# but nodes already granted stay in the cluster until reclaimed. This tests
+# whether a bare Pod can be scheduled onto one directly.
+#
+# nodeSelector, NOT nodeName: Kueue's mpod.kb.io webhook attaches a
+# scheduling gate to every pod in this namespace, and Kubernetes forbids
+# setting nodeName while a gate is present. A gate can be *removed* after
+# creation though (they may only be deleted, never added), so:
+#
+#   kubectl apply -f docs/debug-logs/bg1-probe.yaml
+#   kubectl get pod bg1-probe -o jsonpath='{.spec.schedulingGates}'
+#   kubectl patch pod bg1-probe --type=json \
+#     -p '[{"op":"remove","path":"/spec/schedulingGates"}]'
+#   kubectl get pod bg1-probe -o wide && kubectl logs bg1-probe
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bg1-probe
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: bg-1
+  restartPolicy: Never
+  tolerations:
+    - key: amd.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  containers:
+    - name: probe
+      # Already cached on bg-1 from the earlier run, so this starts fast.
+      image: ghcr.io/rocm/jax-dev-ubu24.therock-7.14:7.14
+      command: ["bash", "-lc"]
+      args:
+        - |
+          echo "=== probe running on $(hostname) ==="
+          rocm-smi --showproductname 2>/dev/null | grep -c "Card Series" || true
+          echo "=== PROBE OK: node usable outside the market admission path ==="
+      resources:
+        limits:
+          amd.com/gpu: 8

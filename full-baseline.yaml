@@ -89,12 +89,52 @@ spec:
             # under this image at all.
             - name: NCCL_DEBUG
               value: "INFO"
+            # Everything except TUNING (the per-collective firehose that made
+            # v3 288MB). Scoping to INIT,ENV last run was too tight: it showed
+            # zero MSCCL lines, which we could not read as "MSCCL is off"
+            # because the filter may simply have excluded them.
             - name: NCCL_DEBUG_SUBSYS
-              value: "INIT,ENV"
-            # HIP runtime errors only (level 1). Silent-by-default HIP failures
-            # are exactly what a wedged stream would produce.
+              value: "ALL,^TUNING"
+            # THE ONE VARIABLE UNDER TEST this run. Part 7 of
+            # gpu-hang-debugging-log.md found this independently sufficient to
+            # fix a hang with exactly the signature we just reproduced
+            # (GPUs pegged, no progress, host blocked in device_get). It was
+            # dropped as unnecessary on rocm7.14.1/jax0.10.0, but this is a
+            # different image and JAX, so that ruling never applied here.
+            - name: RCCL_MSCCL_ENABLE
+              value: "0"
+            # KEEP THIS. Level 1 is HIP errors only, and it is not noise: it
+            # revealed ~3,900/sec of "UpdateStreams failed" from
+            # hip_graph_internal.cpp, firing once per HIP-graph launch right
+            # up to 11s after the last completed step and then stopping dead
+            # at the hang. That error has been present in every previous run;
+            # we simply never had error logging on to see it. XLA wraps
+            # collectives in command buffers (HIP graphs), so this sits
+            # exactly where a collective that never completes would.
+            # Costs ~1GB of log per hour -- worth it, grep past it.
             - name: AMD_LOG_LEVEL
               value: "1"
+            # Silence aiter's benign fwd_v3 warning without hiding real
+            # errors. Source: third_party/aiter/csrc/cpp_itfs/mha_fwd.cu:222
+            #   AITER_LOG_WARNING("unsupported condition in fwd_v3!!! ...")
+            # which is gated in csrc/include/aiter_logger.h by
+            #   getenv("AITER_LOG_LEVEL")   default LOG_INFO(20)
+            #   AITER_LOG_WARNING prints when level <= LOG_WARNING(30)
+            # so ERROR(40) suppresses it while AITER_LOG_ERROR still prints.
+            #
+            # Why bother: it fires once per attention call and produced
+            # ~570,000 lines in 37 steps with command buffers disabled
+            # (~15,400/step), which buries everything else. The warning
+            # itself is expected and understood -- head_dim=64 doesn't match
+            # the ASM-v3 kernel's supported dims (128/128, 192/128, 256/256),
+            # so it falls back to the Composable Kernel path. Correct, just
+            # not the fastest kernel.
+            #
+            # It is emitted from C++ to std::cerr, so Python logging config
+            # cannot suppress it. The level is cached in a function-local
+            # static on first use, so this must be set before the first call.
+            - name: AITER_LOG_LEVEL
+              value: "ERROR"
             # Belt-and-braces with the watchdog in utils/data_utils.py: make
             # the HTTP layer itself give up on a stalled Hub read rather than
             # relying only on our timeout to notice. A raised error retries
@@ -261,18 +301,42 @@ spec:
               PY
               python3 /tmp/rocm_dup_check.py || true
 
-              # (2) Turn a silent collective hang into a crash with a stack.
-              # An unrecognized flag in XLA_FLAGS aborts startup and flag names
-              # drift between XLA builds, so discover what this jaxlib actually
-              # accepts and set only what exists. The grep output also tells us
-              # the right names to use on future runs.
-              XLA_HELP="$(XLA_FLAGS=--help python3 -c 'import jax; jax.devices()' 2>&1 || true)"
-              echo "=== XLA flags matching timeout/nccl/collective ==="
-              echo "$XLA_HELP" | grep -iE 'timeout|nccl|collective' | head -40 || true
+              # (2) Probe which XLA flags this build actually accepts.
+              # DO NOT use `XLA_FLAGS=--help` to enumerate them: on this build
+              # it prints only ~94 lines (mostly CPU flags) and then dies with
+              # "Flag parsing failed", so a name being absent from that dump
+              # proves nothing. Guessing from it produced two wrong names.
+              # Instead, actually try each candidate in a throwaway process --
+              # an unrecognized flag aborts startup, so "the process started"
+              # is a definitive yes and costs one short run each.
+              xla_flag_works() {
+                XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS="$1" \
+                  python3 -c 'import jax; jax.devices()' >/dev/null 2>&1
+              }
+              echo "=== probing XLA flag support (definitive, not --help) ==="
               EXTRA_XLA=""
-              for flag in xla_gpu_nccl_termination_timeout_seconds xla_gpu_collective_timeout_seconds; do
-                if echo "$XLA_HELP" | grep -q -- "$flag"; then
-                  EXTRA_XLA="$EXTRA_XLA --$flag=900"
+              for candidate in \
+                  --xla_gpu_nccl_termination_timeout_seconds=900 \
+                  --xla_gpu_collective_timeout_seconds=900 ; do
+                if xla_flag_works "$candidate"; then
+                  echo "  SUPPORTED: $candidate"
+                  EXTRA_XLA="$EXTRA_XLA $candidate"
+                else
+                  echo "  rejected:  $candidate"
+                fi
+              done
+              # Probed but deliberately NOT applied this run -- disabling
+              # command buffers is the next hypothesis after MSCCL, and
+              # changing two things at once is how Part 6 ended up unable to
+              # say which fix mattered. We only want to learn the valid
+              # spelling now, so the next run can use it without guessing.
+              for candidate in \
+                  --xla_gpu_enable_command_buffer= \
+                  --xla_gpu_graph_min_graph_size=2147483647 ; do
+                if xla_flag_works "$candidate"; then
+                  echo "  SUPPORTED (saved for next run, not applied): $candidate"
+                else
+                  echo "  rejected (not a valid flag here): $candidate"
                 fi
               done
               # Dump the compiled HLO. This costs compile time only -- zero
@@ -326,9 +390,14 @@ spec:
                   # except the old one-off *-vram.log captures.
                   rocm-smi --showuse --showpower --showmemuse --showmeminfo vram \
                     2>/dev/null | grep -Ei 'gpu|use|power|vram|memory' | head -40
-                  # One-shot, once the first module has been compiled.
+                  # Wait for the TRAIN STEP module specifically, and keep
+                  # retrying until it exists. Last run this took `ls -1t |
+                  # head -1` on the first heartbeat, which fired during the
+                  # initial compile and picked up a trivial module -- the
+                  # summary came out empty and, being one-shot, never retried.
                   if [ -z "$HLO_SUMMARISED" ]; then
-                    MODULE=$(ls -1t /tmp/hlo/*after_optimizations.txt 2>/dev/null | head -1)
+                    MODULE=$(ls -S /tmp/hlo/*jit__train_step*after_optimizations.txt \
+                      2>/dev/null | head -1)
                     if [ -n "$MODULE" ]; then
                       echo "--- collectives in optimized HLO ($MODULE) ---"
                       grep -oE '\b(all-reduce|all-gather|reduce-scatter|collective-permute|all-to-all)(-start|-done)?\b' \

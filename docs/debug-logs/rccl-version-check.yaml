@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rccl-version-check
+spec:
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+      command: ["bash", "-c"]
+      args:
+        - |
+          echo "=== librccl.so* files ==="
+          find / -iname "librccl*" 2>/dev/null
+          echo "=== dpkg rccl package ==="
+          dpkg -l | grep -i rccl || echo "not in dpkg"
+          echo "=== ROCm version info ==="
+          cat /opt/rocm/.info/version 2>/dev/null || echo "no version file at that path"
+          find /opt/rocm* -iname "*version*" -path "*rccl*" 2>/dev/null
+          echo "=== strings for version-looking text in the lib ==="
+          for f in $(find / -iname "librccl.so*" 2>/dev/null); do
+            echo "--- $f ---"
+            strings "$f" | grep -iE "^NCCL version|RCCL_VERSION|^2\.[0-9]+\.[0-9]+" | head -5
+          done

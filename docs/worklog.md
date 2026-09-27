@@ -17,6 +17,57 @@ Concise experiment log. One row per run/change. Full narrative history
 | 2026-09-26 | Desk analysis of the step-18 stall — no GPU time spent, no run made (cluster has no GPU node) | n/a | **Leading guess (pathological batch 18) is contradicted by our own logs; the stall's signature matches the original Part 4 hang exactly.** Details in the section below. Instrumented diagnostic run prepared in `full-baseline.yaml`, ready to apply when a node is won. |
 | 2026-09-26 | Streaming data loader: prefetch thread + stall watchdog + exact resume (`utils/data_utils.py`) | this branch | **Fixes an unbounded silent hang.** The old loop had no read timeout (a stalled Hub read blocks forever — no error, no EOF, no log line), no retry (an exception killed the run), and no prefetch (tokenizing 8,192 conversations ran between steps with the GPUs idle, which is why the step-22 shard boundary cost +16s on the critical path). Now a worker thread fills a depth-2 queue and the consumer times out after `BATCH_TIMEOUT_SECONDS=600`, reopening the stream at the exact position via `IterableDataset.state_dict()` — captured after each batch's rows are consumed and advanced only once the consumer takes the batch, so it resumes from what training saw rather than from how far the prefetch ran ahead. Verified locally against `datasets` 5.0.1 (consumed 3-7, resumed at 8) and with a generator that hangs forever at row 18: detected in 2.0s, resumed exactly, no replay and no gap. Side benefit for the diagnostic run — hypothesis 3 is now self-identifying: a data stall logs `Batch stream failed after N batches` and recovers, so a *silent* stall means it's device-side. |
 
+## Stall RESULTS from the instrumented runs (2026-09-26)
+
+**Reproduced, and it is a device-side collective spin.** Instrumented run
+(`docs/debug-logs/full-baseline-aiter-stall-REPRO1.log`, 61MB) stalled
+entering **step 11, not 18** — so the trigger is a race, not a bad batch,
+confirming the desk analysis below.
+
+| Evidence | Reading |
+|---|---|
+| py-spy MainThread identical at all 5 heartbeats over 5 min: `_value` → `device_get` → `base_trainer.py:216` | host blocked on the device; **not** the data path |
+| one `libamdhip64`, one `libhsa-runtime64`, one `librccl` | **hypothesis 1 (duplicate ROCm runtimes) refuted** |
+| GPU use 100%, power **316-376W** vs ~1400W-class TDP, **memory R/W activity 0%** | spinning on a flag, not computing. `rocm-smi` "GPU use" only means a kernel is resident |
+| stalled at 11 (was 18) | nondeterministic → race |
+
+**`UpdateStreams failed` is a real lead, not noise.** `AMD_LOG_LEVEL=1`
+didn't cause it, only revealed it — it has been present in every previous
+run unseen. ~3,900/sec from `hip_graph_internal.cpp`, once per HIP-graph
+launch, continuing to 11s after the last completed step and then stopping
+dead at the hang. Disabling command buffers
+(`--xla_gpu_enable_command_buffer=`) drops it to **0** with **no throughput
+cost** (12.47s/step vs 12.33s) — so command buffers were generating 3,900
+errors/sec for no measurable benefit here.
+
+**Real HLO collective counts** (replacing Part 14's CPU-simulated estimate):
+the `jit__train_step` module has **22 static all-reduces, 14 inside a loop
+body**, gradients all-reduced per parameter tensor in bf16
+(`bf16[2048,8192]` etc.), not one fused buffer.
+
+**The data-loader fix is a measured speedup.** Step time dropped from
+~15.5-16s to **~12.1-12.4s (~22% faster)** with no other change — the
+prefetch thread moved tokenization off the critical path.
+
+### Instrumentation lessons (cost us real time today)
+
+- **`XLA_FLAGS=--help` is useless on this build** — emits ~94 lines, mostly
+  CPU flags, then dies with "Flag parsing failed". A flag missing from it
+  proves nothing. **Probe by launching a throwaway process with the flag
+  instead**: an invalid flag aborts startup, so "it started" is definitive.
+  Doing that showed `--xla_gpu_nccl_termination_timeout_seconds=900` is
+  **supported** (the `--help` grep had wrongly rejected it), as are
+  `--xla_gpu_enable_command_buffer=` and `--xla_gpu_graph_min_graph_size=`.
+  `--xla_gpu_collective_timeout_seconds` does not exist.
+- `NCCL_DEBUG_SUBSYS=ALL,^TUNING` — `TUNING` is the 288MB firehose (one
+  triplet per collective call), not `INFO` generally. Scoping to `INIT,ENV`
+  was too tight: zero MSCCL lines then proves nothing.
+- `/proc/<pid>/task/*/stack` is **Permission denied** in the container, so a
+  `kfd_wait_on_events` count of 0 measures nothing. Don't use it.
+- Grab the HLO summary from `*jit__train_step*`, largest module, and retry
+  until it exists — a one-shot on the first heartbeat fires during initial
+  compile and picks up a trivial module.
+
 ## Step-18 stall: analysis before the next run (2026-09-26)
 
 **Batch 18 is not pathological.** Data order is deterministic —

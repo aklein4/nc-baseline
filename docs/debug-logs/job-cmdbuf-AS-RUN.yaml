@@ -1,0 +1,230 @@
+# AS-RUN capture of the live job, pulled from the cluster with
+#   kubectl get job full-baseline-cmdbuf -o yaml
+# This is ground truth for what actually executed, recorded because
+# the manifests were edited between launches without being committed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: nc-baseline
+    kueue.x-k8s.io/queue-name: default
+  name: full-baseline-cmdbuf
+spec:
+  backoffLimit: 0
+  completionMode: NonIndexed
+  completions: 1
+  manualSelector: false
+  parallelism: 1
+  podReplacementPolicy: TerminatingOrFailed
+  selector:
+    matchLabels:
+      batch.kubernetes.io/controller-uid: 57513b03-9ab9-413a-a590-e79165e336c6
+  suspend: false
+  template:
+    metadata:
+      annotations:
+        autoscaling.x-k8s.io/consume-provisioning-request: job-full-baseline-cmdbuf-48353-market-1
+        autoscaling.x-k8s.io/provisioning-class-name: market.nationalcompute.com
+        kueue.x-k8s.io/workload: job-full-baseline-cmdbuf-48353
+      labels:
+        app: nc-baseline
+        batch.kubernetes.io/controller-uid: 57513b03-9ab9-413a-a590-e79165e336c6
+        batch.kubernetes.io/job-name: full-baseline-cmdbuf
+        controller-uid: 57513b03-9ab9-413a-a590-e79165e336c6
+        job-name: full-baseline-cmdbuf
+        kueue.x-k8s.io/cluster-queue-name: market
+        kueue.x-k8s.io/local-queue-name: default
+        kueue.x-k8s.io/podset: main
+    spec:
+      containers:
+      - args:
+        - "\nset -euxo pipefail\n\n# Node/GPU diagnostics, first thing, so a run that behaves\n# differently\
+          \ than a prior one has something to compare\n# against without needing a live kubectl exec investigation.\n\
+          # Runs before anything else can fail. `|| true` on every\n# rocm-smi call: a diagnostics hiccup\
+          \ must never abort the job.\necho \"=== node: ${NODE_NAME} (${NODE_IP}) | $(date -u +%Y-%m-%dT%H:%M:%SZ)\
+          \ ===\"\necho \"=== host kernel/OS ===\"\nuname -a || true\necho \"=== GPU product / firmware\
+          \ ===\"\nrocm-smi --showproductname --showuniqueid --showvbios --showdriverversion || true\n\
+          echo \"=== GPU topology (link type / hops) ===\"\nrocm-smi --showtopo || true\necho \"=== GPU\
+          \ concise status (temp/clock/power/util) ===\"\nrocm-smi || true\necho \"=== RAS/ECC error counts\
+          \ ===\"\nrocm-smi --showrasinfo all || true\necho \"=== end diagnostics ===\"\n\n# Pinned to\
+          \ this experiment branch so main stays on the\n# confirmed rocm10.0/jax==0.11.2 baseline while\
+          \ this\n# rocm7.14-GA/jax==0.11.0 combo is being tried.\ngit clone -b experiment/rocm714-ga-jax0110\
+          \ https://github.com/aklein4/nc-baseline.git\ncd nc-baseline\n\npython3 -m pip install \"uv==$(cat\
+          \ .uv-version)\"\n\nuv sync --locked --extra rocm --no-dev --python \"$(cat .python-version)\"\
+          \n\n# Build jax-aiter from source into the SAME venv training uses,\n# so `from jax_aiter.mha\
+          \ import flash_attn_func` (already in\n# src/utils/attention_utils.py) resolves at train time.\n\
+          # release/v0.1.0-alpha2 targets exactly the jax==0.11.0 pinned\n# above. Verified end-to-end\
+          \ in a standalone diagnostic job\n# first (docs/worklog.md) -- this repeats those exact steps.\n\
+          # `source .venv/bin/activate` makes plain python3/make resolve\n# inside the venv (needed for\
+          \ the Makefile's internal python3\n# calls). uv-managed venvs have no `pip` module at all, though\n\
+          # -- use `uv pip install` (targets $VIRTUAL_ENV, set by the\n# activate script above) for every\
+          \ install from here on.\nsource .venv/bin/activate\nuv pip install cmake ninja pyyaml zstandard\
+          \ pandas\n\ngit clone --recursive -b release/v0.1.0-alpha2 https://github.com/ROCm/jax-aiter.git\n\
+          (\n  cd jax-aiter\n  export JA_ROOT_DIR=\"$PWD\"\n  export GPU_ARCHS=gfx950\n  export AITER_SYMBOL_VISIBLE=1\n\
+          \n  # Downloads AMD's prebuilt MHA/rmsnorm JIT libs (matches this\n  # branch's pinned aiter\
+          \ submodule commit exactly) instead of\n  # the multi-hour from-scratch JIT build.\n  bash ci/fetch_jit_libs.sh\n\
+          \n  make\n  make ja_mods\n  JA_WHEEL_VARIANT=full uv pip install .\n)\npython3 -c \"from jax_aiter.mha\
+          \ import flash_attn_func; print('JAX-AITER: OK')\"\n\n# =============================================================\n\
+          # DIAGNOSTIC BLOCK -- capture what the step-18 stall actually\n# is. Pure observation: nothing\
+          \ here changes what the training\n# run computes or which kernels it picks. Remove once resolved.\n\
+          # =============================================================\n\nuv pip install py-spy\n\n\
+          # (1) Duplicate-ROCm-runtime check, the leading hypothesis.\n# Our uv venv installs its own\
+          \ _rocm_sdk_core (pulled in by\n# jax-rocm7-plugin), while jax-aiter is compiled against the\n\
+          # image's SYSTEM ROCm -- which is the whole reason we're on the\n# dev image. If both get mapped\
+          \ into one process, two copies of\n# libamdhip64/librccl/libhsa end up managing the same streams,\n\
+          # events and signals: a textbook \"runs fine for a while, then\n# wedges with the GPUs spinning\"\
+          \ bug. AITER_SYMBOL_VISIBLE=1\n# (set in the build above) makes interposition more likely still.\n\
+          # READING THIS: any library below appearing at TWO different\n# paths is the finding. Runs in\
+          \ a throwaway process first so it\n# cannot perturb training.\ncat > /tmp/rocm_dup_check.py\
+          \ <<'PY'\nimport re\nimport jax\nprint(\"devices:\", jax.devices())\nfrom jax_aiter.mha import\
+          \ flash_attn_func  # noqa: F401\npattern = re.compile(r\"libamdhip64|librccl|libhsa-runtime|libamd_comgr|libmha|librocm\"\
+          )\npaths = set()\nfor line in open(\"/proc/self/maps\"):\n    fields = line.split()\n    if\
+          \ len(fields) >= 6 and pattern.search(fields[-1]):\n        paths.add(fields[-1])\nprint(\"\
+          === ROCm libraries mapped into a single process ===\")\nfor path in sorted(paths):\n    print(\"\
+          \   \", path)\nPY\npython3 /tmp/rocm_dup_check.py || true\n\n# (2) Probe which XLA flags this\
+          \ build actually accepts.\n# DO NOT use `XLA_FLAGS=--help` to enumerate them: on this build\n\
+          # it prints only ~94 lines (mostly CPU flags) and then dies with\n# \"Flag parsing failed\"\
+          , so a name being absent from that dump\n# proves nothing. Guessing from it produced two wrong\
+          \ names.\n# Instead, actually try each candidate in a throwaway process --\n# an unrecognized\
+          \ flag aborts startup, so \"the process started\"\n# is a definitive yes and costs one short\
+          \ run each.\nxla_flag_works() {\n  XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_FLAGS=\"$1\" \\\n\
+          \    python3 -c 'import jax; jax.devices()' >/dev/null 2>&1\n}\necho \"=== probing XLA flag\
+          \ support (definitive, not --help) ===\"\nEXTRA_XLA=\"\"\nfor candidate in \\\n    --xla_gpu_nccl_termination_timeout_seconds=900\
+          \ \\\n    --xla_gpu_collective_timeout_seconds=900 ; do\n  if xla_flag_works \"$candidate\"\
+          ; then\n    echo \"  SUPPORTED: $candidate\"\n    EXTRA_XLA=\"$EXTRA_XLA $candidate\"\n  else\n\
+          \    echo \"  rejected:  $candidate\"\n  fi\ndone\n# Probed but deliberately NOT applied this\
+          \ run -- disabling\n# command buffers is the next hypothesis after MSCCL, and\n# changing two\
+          \ things at once is how Part 6 ended up unable to\n# say which fix mattered. We only want to\
+          \ learn the valid\n# spelling now, so the next run can use it without guessing.\nfor candidate\
+          \ in \\\n    --xla_gpu_enable_command_buffer= \\\n    --xla_gpu_graph_min_graph_size=2147483647\
+          \ ; do\n  if xla_flag_works \"$candidate\"; then\n    echo \"  SUPPORTED (saved for next run,\
+          \ not applied): $candidate\"\n  else\n    echo \"  rejected (not a valid flag here): $candidate\"\
+          \n  fi\ndone\n# Dump the compiled HLO. This costs compile time only -- zero\n# runtime overhead,\
+          \ so it cannot perturb the race we're trying\n# to reproduce. Pays for the worklog's open item\
+          \ #2: Part 14\n# established \"64 all-reduces per step\" from a CPU simulation\n# (--xla_force_host_platform_device_count=8),\
+          \ never from the\n# real compiler on real hardware. The watcher summarises the\n# optimized\
+          \ module below, which either confirms that number and\n# gives real byte sizes, or shows the\
+          \ GPU compiler does\n# something different -- either way it's the input to deciding\n# whether\
+          \ perf/gradient-sync-shard-map is worth landing.\nmkdir -p /tmp/hlo\nEXTRA_XLA=\"$EXTRA_XLA\
+          \ --xla_dump_to=/tmp/hlo --xla_dump_hlo_as_text\"\n\nEXTRA_XLA=\"$EXTRA_XLA --xla_gpu_enable_command_buffer=\"\
+          \n              echo \"=== extra XLA flags for this run: '${EXTRA_XLA}' ===\"\nexport XLA_FLAGS=\"\
+          ${XLA_FLAGS:-}${EXTRA_XLA}\"\n\n# (3) Heartbeat watcher. The stall is silent by construction:\n\
+          # base_trainer.py only logs AFTER a step completes, so a frozen\n# run emits nothing at all\
+          \ and we learn nothing from the log.\n# Every 60s this prints the three things that separate\
+          \ the\n# hypotheses from each other:\n#   - power vs. util: a spin-waiting collective pegs util\
+          \ at\n#     100% while drawing well under TDP; genuine compute draws\n#     near TDP. rocm-smi's\
+          \ \"GPU use\" only means a kernel is\n#     resident, so power is the honest signal.\n#   -\
+          \ py-spy stack: a frame in next(iterator) or a socket read\n#     means the host is stuck fetching\
+          \ streaming data; a frame\n#     in device_get/PJRT means the device is stuck.\n#   - mapped\
+          \ ROCm library paths, for the REAL training process\n#     rather than the throwaway probe in\
+          \ (1).\n# Survives the exec below (separate process, same stdout) and\n# dies with the pod when\
+          \ training exits.\n(\n  set +x\n  set +e\n  HLO_SUMMARISED=\"\"\n  while true; do\n    sleep\
+          \ 60\n    PID=\"\"\n    for candidate in $(pgrep -f 'src/train.py' 2>/dev/null); do\n      case\
+          \ \"$(cat /proc/$candidate/comm 2>/dev/null)\" in\n        python*) PID=\"$candidate\"; break;;\n\
+          \      esac\n    done\n    echo \"=== WATCH $(date -u +%H:%M:%SZ) pid=${PID:-none} ===\"\n \
+          \   # VRAM alongside power/util: HBM headroom is the input to\n    # every \"can we go bigger/faster\"\
+          \ question (batch size,\n    # num_logit_iterations), and no run so far has logged it\n    #\
+          \ except the old one-off *-vram.log captures.\n    rocm-smi --showuse --showpower --showmemuse\
+          \ --showmeminfo vram \\\n      2>/dev/null | grep -Ei 'gpu|use|power|vram|memory' | head -40\n\
+          \    # Wait for the TRAIN STEP module specifically, and keep\n    # retrying until it exists.\
+          \ Last run this took `ls -1t |\n    # head -1` on the first heartbeat, which fired during the\n\
+          \    # initial compile and picked up a trivial module -- the\n    # summary came out empty and,\
+          \ being one-shot, never retried.\n    if [ -z \"$HLO_SUMMARISED\" ]; then\n      MODULE=$(ls\
+          \ -S /tmp/hlo/*jit__train_step*after_optimizations.txt \\\n        2>/dev/null | head -1)\n\
+          \      if [ -n \"$MODULE\" ]; then\n        echo \"--- collectives in optimized HLO ($MODULE)\
+          \ ---\"\n        grep -oE '\\b(all-reduce|all-gather|reduce-scatter|collective-permute|all-to-all)(-start|-done)?\\\
+          b' \\\n          \"$MODULE\" | sort | uniq -c | sort -rn\n        echo \"--- all-reduce operand\
+          \ shapes (size of each sync) ---\"\n        grep -oE '= *\\(?(f32|bf16|f16)\\[[0-9,]*\\][^=]*all-reduce'\
+          \ \"$MODULE\" \\\n          | grep -oE '(f32|bf16|f16)\\[[0-9,]*\\]' | sort | uniq -c | sort\
+          \ -rn | head -20\n        HLO_SUMMARISED=1\n      fi\n    fi\n    [ -z \"$PID\" ] && continue\n\
+          \    echo \"--- ROCm libs mapped in the training process ---\"\n    grep -oE '/[^ ]*(libamdhip64|librccl|libhsa-runtime|libmha)[^\
+          \ ]*' \\\n      /proc/$PID/maps | sort -u\n    echo \"--- python stack ---\"\n    py-spy dump\
+          \ --pid \"$PID\" 2>&1 | head -80\n    echo \"--- thread count in GPU-driver wait (kfd_wait_on_events)\
+          \ ---\"\n    grep -l kfd_wait_on_events /proc/$PID/task/*/stack 2>/dev/null | wc -l\n  done\n\
+          ) &\n\n# exec replaces Bash with the launcher so its exit status is the job's\n# --no-sync to\
+          \ avoid messing with the uv env since rocm is not specified in run\nexec uv run --no-sync python\
+          \ src/train.py \\\n  --config-name=horizon-lm-mi-8 \\\n  name=full-baseline \\\n  distributed.initialize=false\
+          \ \\\n  model.attention_backend=auto\n  \n"
+        command:
+        - bash
+        - -c
+        env:
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: NCCL_DEBUG
+          value: INFO
+        - name: NCCL_DEBUG_SUBSYS
+          value: ALL,^TUNING
+        - name: AMD_LOG_LEVEL
+          value: '1'
+        - name: HF_HUB_DOWNLOAD_TIMEOUT
+          value: '60'
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.hostIP
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: HF_TOKEN
+              name: api-keys
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: WANDB_API_KEY
+              name: api-keys
+        - name: HF_ID
+          valueFrom:
+            secretKeyRef:
+              key: HF_ID
+              name: api-keys
+        image: ghcr.io/rocm/jax-dev-ubu24.therock-7.14:7.14
+        imagePullPolicy: IfNotPresent
+        name: train
+        resources:
+          limits:
+            amd.com/gpu: '8'
+        securityContext:
+          capabilities:
+            add:
+            - SYS_PTRACE
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: shm
+        - mountPath: /mnt/shared
+          name: shared
+        workingDir: /workspace
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        marketplace.nationalcompute.com/request: 277aa7cd-d7c8-4723-a7a0-3c011a4df5fa
+        node-role.kubernetes.io/gpu-worker: ''
+      restartPolicy: Never
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 60
+      tolerations:
+      - effect: NoSchedule
+        key: amd.com/gpu
+        operator: Exists
+      - effect: NoSchedule
+        key: amd.com/gpu
+        operator: Equal
+        value: present
+      volumes:
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi
+        name: shm
+      - hostPath:
+          path: /mnt/shared
+          type: ''
+        name: shared
+  ttlSecondsAfterFinished: 7200
