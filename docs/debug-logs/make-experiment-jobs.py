@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BASE = ROOT / "full-baseline.yaml"
 OUT = ROOT / "docs" / "debug-logs"
 
-# (suffix, description, env overrides, XLA_FLAGS additions)
+# (suffix, description, env overrides, XLA_FLAGS additions, extra env to strip)
 # No node here on purpose: the marketplace chooses the node (see below).
 EXPERIMENTS = [
     (
@@ -33,6 +33,7 @@ EXPERIMENTS = [
         "independently sufficient to fix this exact signature in Part 7.",
         {"RCCL_MSCCL_ENABLE": "0"},
         None,
+        set(),
     ),
     (
         "cmdbuf",
@@ -42,6 +43,25 @@ EXPERIMENTS = [
         "them tests whether that path is what wedges.",
         {},
         "--xla_gpu_enable_command_buffer=",
+        set(),
+    ),
+    (
+        "control",
+        "THE CONTROL. Neither RCCL_MSCCL_ENABLE=0 nor command-buffers-off, "
+        "everything else identical to the two runs that went clean (85 and "
+        "148 steps). If this stalls, one or both of those changes is a real "
+        "fix. If it runs clean past ~150 steps, neither is doing anything and "
+        "the suspect becomes NCCL_DEBUG_SUBSYS=ALL perturbing the race timing "
+        "-- i.e. the 'fix' is a Heisenbug mask. Note "
+        "--xla_gpu_nccl_termination_timeout_seconds is NOT a candidate: it "
+        "only terminates a stuck rendezvous, it cannot prevent one.",
+        {},
+        None,
+        # Neither clean run had AITER_LOG_LEVEL (it was added afterwards), and
+        # it changes stderr volume by ~570k lines -- which is exactly the
+        # timing variable under suspicion. Strip it so this differs from those
+        # runs by the intended variable only.
+        {"AITER_LOG_LEVEL"},
     ),
 ]
 
@@ -52,7 +72,7 @@ def main() -> int:
         return 1
     base = yaml.safe_load(BASE.read_text())
 
-    for suffix, why, env_extra, xla_extra in EXPERIMENTS:
+    for suffix, why, env_extra, xla_extra, strip_extra in EXPERIMENTS:
         job = copy.deepcopy(base)
         name = f"full-baseline-{suffix}"
         job["metadata"]["name"] = name
@@ -83,7 +103,7 @@ def main() -> int:
                 env.append({"name": key, "value": value})
         # Drop any env key this experiment must NOT carry, so the two runs
         # differ by exactly one variable.
-        controlled = {"RCCL_MSCCL_ENABLE"}
+        controlled = {"RCCL_MSCCL_ENABLE"} | strip_extra
         container["env"] = [
             e for e in env if e.get("name") not in (controlled - set(env_extra))
         ]
